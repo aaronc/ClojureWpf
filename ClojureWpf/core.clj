@@ -2,7 +2,7 @@
   (:import [System.Windows.Markup XamlReader]
            [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart]
            [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
-           [System.Windows Application Window]))
+           [System.Windows Application Window EventManager]))
 
 
 (def *dispatcher-exception (atom nil))
@@ -85,3 +85,59 @@
    elem-mutator &
    [xaml-dev-path & opts]]
   `(def ~name (ClojureWpf.core/make-ui-spec ~elem-constructor ~elem-mutator ~xaml-dev-path)))
+
+(defmacro gen-routed-event-fn [name evt action]
+  `(intern *ns* ~name [ui-elem# func#]
+     (let [handler# (clojure.core/gen-delegate (.get_HandlerType ~evt) [s# e#] (func# s# e#))]
+       (~action ui-elem# ~evt handler#)
+       handler#)))
+
+(defmacro def-routed-event-add [name evt]
+  (let [action (fn [ui-elem evt handler] (.AddHandler ui-elem evt handler))]
+    `(gen-routed-event-fn ~name ~evt ~action)))
+
+(defmacro def-routed-event-remove [name evt]
+  (let [action (fn [ui-elem evt handler] (.RemoveHandler ui-elem evt handler))]
+    `(gen-routed-event-fn ~name ~evt ~action)))
+
+(defmacro get-name [x] `(.Name ~x))
+(defn mksym1 [x a] `(symbol (str ~x ~a)))
+
+(defmacro def-routed-event-fns [evt]
+  (let [name (get-name evt)
+        add-name (mksym1 name "+")
+        remove-name (mksym1 name "-")]
+    `(let [name# (.Name ~evt)
+           add-name# (symbol (str name# "+"))
+           evt# ~evt]
+       (eval  `(ClojureWpf.core/def-routed-event-add add-name# ~evt#))
+       (println add-name#))))
+
+(comment (do (println ~add-name)
+         (ClojureWpf.core/def-routed-event-add ~add-name ~evt)
+       (comment (ClojureWpf.core/def-routed-event-add ~add-name ~evt)
+                (ClojureWpf.core/def-routed-event-remove ~remove-name ~evt))))
+(comment (let [name# (.Name ~evt)
+                 add-name# (symbol (str name# "+"))
+                 remove-name# (symbol (str name# "-"))]
+             (println add-name#)
+             (ClojureWpf.core/def-routed-event-add add-name# ~evt)
+             (ClojureWpf.core/def-routed-event-remove remove-name# ~evt)))
+
+(doseq [evt (EventManager/GetRoutedEvents)]
+  (def-routed-event-fns evt))
+
+(defn- event-helper [target event-key handler prefix]
+  (let [mname (str prefix (name event-key))]
+    (if-let [m (.GetMethod (.GetType target) mname)]
+      (let [dg (if-not (instance? Delegate handler)
+                 (gen-delegate (.ParameterType (aget (.GetParameters m) 0))
+                               [s e] (handler s e))
+                 handler)]
+        (.Invoke m target (to-array [dg]))
+        dg)
+      (throw (System.MissingMethodException. (str (.GetType target)) mname)))))
+
+(defn += [target event-key handler] (event-helper target event-key handler "add_"))
+
+(defn -= [target event-key handler] (event-helper target event-key handler "add_"))
