@@ -2,9 +2,12 @@
   (:import [System.Windows.Markup XamlReader]
            [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart EventWaitHandle EventResetMode]
            [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
-           [System.Windows Application Window EventManager DependencyProperty]
+           [System.Windows Application Window EventManager DependencyProperty LogicalTreeHelper]
            [System.Windows.Data BindingBase Binding BindingOperations]
-           [System.Reflection BindingFlags]))
+           [System.Reflection BindingFlags]
+           [System.ComponentModel PropertyDescriptor MemberDescriptor]
+           [System.Xaml XamlSchemaContext]
+           [System.Collections ICollection]))
 
 
 (defn with-invoke* [dispatcher-obj func]
@@ -164,7 +167,7 @@
   (if (empty? path)
     target
     (let [name (name (first path))]
-      (.FindName target name))))
+      (LogicalTreeHelper/FindLogicalNode target name))))
 
 (defn find-elem-warn [target path]
   (if-let [elem (find-elem target path)]
@@ -178,3 +181,39 @@
                    `(ClojureWpf.core/pset! (ClojureWpf.core/find-elem-warn ~target ~path) ~@setters)))]
     `(ClojureWpf.core/with-invoke ~target
        ~@xforms)))
+
+(def xaml-map
+  (apply assoc {}
+         (mapcat (fn [xt] [(.get_Name xt) xt])
+           (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
+
+(declare caml)
+
+(defn caml [forms]
+  (let [nexpr (name (first forms))
+        enidx (.IndexOf nexpr "#")
+        ename (when (> enidx 0) (.Substring nexpr (inc enidx)))
+        tname (if ename (.Substring nexpr 0 enidx) nexpr)
+        xt (xaml-map tname)]
+    (when xt
+      (let [elem (Activator/CreateInstance (.get_UnderlyingType xt))
+            more (rest forms)
+            attrs? (first more)
+            attrs (when (map? attrs?) attrs?)
+            children (if attrs (rest more) more)]
+        (when ename (.set_Name elem ename))
+        (when attrs (apply pset! (apply into [elem] attrs)))
+        (when-let [child-elems (seq (for [c children] (if (string? c) c (caml c))))]
+          (let [cp (.get_ContentProperty xt)
+                invoker (.get_Invoker cp)
+                existingValue (.GetValue invoker elem)]
+            (if (and existingValue (instance? ICollection existingValue))
+              (doseq [ce child-elems] (when ce (.Add existingValue ce)))
+              (when (= 1 (count child-elems)) (.SetValue invoker elem (first child-elems))))))
+        elem))))
+
+(comment (defmacro caml [forms]
+           (let [fir (name (first forms))
+                 more (rest forms)]
+             `(caml* ~fir '[~@more]))))
+                
