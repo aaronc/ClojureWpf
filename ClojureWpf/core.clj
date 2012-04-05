@@ -1,21 +1,45 @@
 (ns ClojureWpf.core
   (:import [System.Windows.Markup XamlReader]
-           [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart]
+           [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart EventWaitHandle EventResetMode]
            [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
-           [System.Windows Application Window EventManager]))
+           [System.Windows Application Window EventManager DependencyProperty]
+           [System.Windows.Data BindingBase Binding BindingOperations]
+           [System.Reflection BindingFlags]))
 
+
+(defn with-invoke* [dispatcher-obj func]
+  (let [dispatcher (.get_Dispatcher dispatcher-obj)]
+    (if (.CheckAccess dispatcher)
+      (func)
+      (.Invoke dispatcher DispatcherPriority/Normal 
+                    (sys-func [Object] [] (func))))))
+
+(defmacro with-invoke [dispatcher-obj & body]
+  `(ClojureWpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
+
+(defn with-begin-invoke* [dispatcher-obj func]
+  (let [dispatcher (.get_Dispatcher dispatcher-obj)]
+    (if (.CheckAccess dispatcher)
+      (func)
+      (.BeginInvoke dispatcher DispatcherPriority/Normal 
+                    (sys-func [Object] [] (func))))))
+
+(defmacro with-begin-invoke [dispatcher-obj & body]
+  `(ClojureWpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
 
 (def *dispatcher-exception (atom nil))
 
-(defn- dispatcher-unhandled-execption [sender args]
+(defn- dispatcher-unhandled-exception [sender args]
   (let [ex (.get_Exception args)]
     (reset! *dispatcher-exception ex)
-    (println "Dispatcher Exception: " ex)))
+    (println "Dispatcher Exception: " ex)
+    (.set_Handled args true)))
 
 (defn separate-threaded-window
   [& {:keys [exception-handler]}]
   (let [window (atom nil)
-        ex-handler (or exception-handler dispatcher-unhandled-execption)
+        ex-handler (or exception-handler dispatcher-unhandled-exception)
+        waitHandle (EventWaitHandle. false EventResetMode/AutoReset)
         thread (doto (Thread.
                    (gen-delegate ParameterizedThreadStart [window]
                                  (reset! window (Window.))
@@ -23,10 +47,12 @@
                                  (.Show @window)
                                  (.add_UnhandledException Dispatcher/CurrentDispatcher
                                                           (gen-delegate DispatcherUnhandledExceptionEventHandler [s e]
-                                                                        (exception-handler s e)))
+                                                                        (ex-handler s e)))
+                                 (.Set waitHandle)
                                  (Dispatcher/Run)))
                (.SetApartmentState ApartmentState/STA)
                (.Start window))]
+    (.WaitOne waitHandle)
     {:thread thread :window @window}))
     
 
@@ -39,16 +65,15 @@
 (def dev-sandbox-setter (atom nil))
 
 (defn dev-sandbox []
-  (let [sandbox (separate-threaded-window)]
+  (let [sandbox (separate-threaded-window)
+        window (:window sandbox)]
     (reset! dev-sandbox-setter
-            (fn [func] (.BeginInvoke (.get_Dispatcher (:window sandbox)) DispatcherPriority/Normal 
-                                 (gen-delegate System.Action [] (.set_Content (:window sandbox) (func))))))
+            (fn [func] (with-invoke window (.set_Content window (func)))))
     sandbox))
 
 (defn sandbox-load [func]
   (when @dev-sandbox-setter
     (@dev-sandbox-setter (fn [] (func :dev true)))))
-
 
 (defn set-live-reload! [enable])
 
@@ -86,47 +111,6 @@
    [xaml-dev-path & opts]]
   `(def ~name (ClojureWpf.core/make-ui-spec ~elem-constructor ~elem-mutator ~xaml-dev-path)))
 
-(defmacro gen-routed-event-fn [name evt action]
-  `(intern *ns* ~name [ui-elem# func#]
-     (let [handler# (clojure.core/gen-delegate (.get_HandlerType ~evt) [s# e#] (func# s# e#))]
-       (~action ui-elem# ~evt handler#)
-       handler#)))
-
-(defmacro def-routed-event-add [name evt]
-  (let [action (fn [ui-elem evt handler] (.AddHandler ui-elem evt handler))]
-    `(gen-routed-event-fn ~name ~evt ~action)))
-
-(defmacro def-routed-event-remove [name evt]
-  (let [action (fn [ui-elem evt handler] (.RemoveHandler ui-elem evt handler))]
-    `(gen-routed-event-fn ~name ~evt ~action)))
-
-(defmacro get-name [x] `(.Name ~x))
-(defn mksym1 [x a] `(symbol (str ~x ~a)))
-
-(defmacro def-routed-event-fns [evt]
-  (let [name (get-name evt)
-        add-name (mksym1 name "+")
-        remove-name (mksym1 name "-")]
-    `(let [name# (.Name ~evt)
-           add-name# (symbol (str name# "+"))
-           evt# ~evt]
-       (eval  `(ClojureWpf.core/def-routed-event-add add-name# ~evt#))
-       (println add-name#))))
-
-(comment (do (println ~add-name)
-         (ClojureWpf.core/def-routed-event-add ~add-name ~evt)
-       (comment (ClojureWpf.core/def-routed-event-add ~add-name ~evt)
-                (ClojureWpf.core/def-routed-event-remove ~remove-name ~evt))))
-(comment (let [name# (.Name ~evt)
-                 add-name# (symbol (str name# "+"))
-                 remove-name# (symbol (str name# "-"))]
-             (println add-name#)
-             (ClojureWpf.core/def-routed-event-add add-name# ~evt)
-             (ClojureWpf.core/def-routed-event-remove remove-name# ~evt)))
-
-(doseq [evt (EventManager/GetRoutedEvents)]
-  (def-routed-event-fns evt))
-
 (defn- event-helper [target event-key handler prefix]
   (let [mname (str prefix (name event-key))]
     (if-let [m (.GetMethod (.GetType target) mname)]
@@ -140,4 +124,57 @@
 
 (defn += [target event-key handler] (event-helper target event-key handler "add_"))
 
-(defn -= [target event-key handler] (event-helper target event-key handler "add_"))
+(defn -= [target event-key handler] (event-helper target event-key handler "remove_"))
+
+(defn find-static-field [target fname]
+  (if-let [f (.GetFields (.GetType target) fname (enum-or BindingFlags/Static BindingFlags/Public))]
+      (.GetValue f)
+      (throw (System.MissingFieldException. (str (.GetType target)) fname))))
+
+(defn find-dep-prop [target key]
+  (find-static-field target (str (name key) "Property")))
+
+(defn find-routed-event [target key]
+  (find-static-field target (str (name key) "Event")))
+
+(defn bind [target key binding]
+  (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop target key))]
+    (BindingOperations/SetBinding target dep-prop binding)))
+
+(defn set-property-by-key [target key val]
+  (if (instance? DependencyProperty key)
+    (.SetValue target key val)
+    (let [mname (str "set_" (name key))]
+      (if-let [m (.GetMethod (.GetType target) mname)]
+        (.Invoke m target (to-array [val]))
+        (throw (System.MissingMethodException. (str (.GetType target)) mname))))))
+
+(defn set-event-by-key [target key val] (+= target key val))
+
+(defn pset! [target & setters]
+  (when target
+    (with-invoke target
+      (doseq [[key val] (partition 2 setters)]
+        (cond
+         (fn? val) (set-event-by-key target key val)
+         (instance? BindingBase val) (bind target key val)
+         :default (set-property-by-key target key val))))))
+
+(defn find-elem [target path]
+  (if (empty? path)
+    target
+    (let [name (name (first path))]
+      (.FindName target name))))
+
+(defn find-elem-warn [target path]
+  (if-let [elem (find-elem target path)]
+    elem
+    (println "Unable to find " path " in " target)))
+
+(defmacro at [target & forms]
+  (let [xforms (for [form forms]
+                 (let [path (first form)
+                       setters (rest form)]
+                   `(ClojureWpf.core/pset! (ClojureWpf.core/find-elem-warn ~target ~path) ~@setters)))]
+    `(ClojureWpf.core/with-invoke ~target
+       ~@xforms)))
