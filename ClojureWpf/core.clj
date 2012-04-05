@@ -152,6 +152,16 @@
         (.Invoke m target (to-array [val]))
         (throw (System.MissingMethodException. (str (.GetType target)) mname))))))
 
+(declare caml+)
+
+(defn set-property-collection [target key val]
+  (if-let [prop (.GetProperty (.GetType target) (name key))]
+    (if-let [coll (.GetValue prop target nil)]
+      (let [items val]
+        (doseq [item (apply caml+ items)] (.Add coll item)))
+      (.SetValue prop target val nil))
+    (throw (System.MissingMethodException. (str (.GetType target)) (name key)))))
+
 (defn set-event-by-key [target key val] (+= target key val))
 
 (defn pset! [target & setters]
@@ -161,6 +171,7 @@
         (cond
          (fn? val) (set-event-by-key target key val)
          (instance? BindingBase val) (bind target key val)
+         (vector? val) (set-property-collection target key val)
          :default (set-property-by-key target key val))))))
 
 (defn find-elem [target path]
@@ -187,8 +198,6 @@
          (mapcat (fn [xt] [(.get_Name xt) xt])
            (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
 
-(declare caml)
-
 (defn caml [forms]
   (let [nexpr (name (first forms))
         enidx (.IndexOf nexpr "#")
@@ -211,6 +220,9 @@
               (doseq [ce child-elems] (when ce (.Add existingValue ce)))
               (when (= 1 (count child-elems)) (.SetValue invoker elem (first child-elems))))))
         elem))))
+
+(defn caml+ [& children]
+  (vec (for [c children] (if (and (vector? c) (keyword? (first c))) (caml c) c))))
 
 (comment (defmacro caml [forms]
            (let [fir (name (first forms))
