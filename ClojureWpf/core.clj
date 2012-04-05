@@ -152,14 +152,15 @@
         (.Invoke m target (to-array [val]))
         (throw (System.MissingMethodException. (str (.GetType target)) mname))))))
 
-(declare caml+)
+(declare caml)
 
 (defn set-property-collection [target key val]
   (if-let [prop (.GetProperty (.GetType target) (name key))]
-    (if-let [coll (.GetValue prop target nil)]
-      (let [items val]
-        (doseq [item (apply caml+ items)] (.Add coll item)))
-      (.SetValue prop target val nil))
+    (let [existing (.GetValue prop target nil)
+          items (apply caml val)]
+      (if (and existing (instance? ICollection existing))
+        (doseq [item items] (.Add existing item))
+        (.SetValue prop target items nil)))
     (throw (System.MissingMethodException. (str (.GetType target)) (name key)))))
 
 (defn set-event-by-key [target key val] (+= target key val))
@@ -198,7 +199,7 @@
          (mapcat (fn [xt] [(.get_Name xt) xt])
            (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
 
-(defn caml [forms]
+(defn caml* [forms]
   (let [nexpr (name (first forms))
         enidx (.IndexOf nexpr "#")
         ename (when (> enidx 0) (.Substring nexpr (inc enidx)))
@@ -212,7 +213,7 @@
             children (if attrs (rest more) more)]
         (when ename (.set_Name elem ename))
         (when attrs (apply pset! (apply into [elem] attrs)))
-        (when-let [child-elems (seq (for [c children] (if (string? c) c (caml c))))]
+        (when-let [child-elems (seq (for [c children] (if (string? c) c (caml* c))))]
           (let [cp (.get_ContentProperty xt)
                 invoker (.get_Invoker cp)
                 existingValue (.GetValue invoker elem)]
@@ -221,8 +222,10 @@
               (when (= 1 (count child-elems)) (.SetValue invoker elem (first child-elems))))))
         elem))))
 
-(defn caml+ [& children]
-  (vec (for [c children] (if (and (vector? c) (keyword? (first c))) (caml c) c))))
+(defn caml [& children]
+  (if (keyword? (first children))
+    (caml* children)
+    (vec (for [c children] (if (and (vector? c) (keyword? (first c))) (caml* c) c)))))
 
 (comment (defmacro caml [forms]
            (let [fir (name (first forms))
