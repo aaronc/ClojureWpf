@@ -4,7 +4,7 @@
            [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
            [System.Windows Application Window EventManager DependencyProperty FrameworkPropertyMetadata LogicalTreeHelper]
            [System.Windows.Data BindingBase Binding BindingOperations]
-           [System.Reflection BindingFlags]
+           [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
            [System.ComponentModel PropertyDescriptor MemberDescriptor]
            [System.Xaml XamlSchemaContext]
            [System.Collections ICollection]))
@@ -165,15 +165,54 @@
 
 (defn set-event-by-key [target key val] (+= target key val))
 
+(defn- mutate-prop [target prop-info func]
+  (let [val (.GetValue prop-info target nil)
+        mutated (func val)]
+    (when (.CanWrite prop-info)
+      (.SetValue prop-info target mutated nil))))
+
+(defn- set-prop-collection [target prop-info coll])
+
+(defn- set-prop [target prop-info val]
+  (cond (ifn? val) (mutate-prop target prop-info val)
+        (sequential? val) (set-prop-collection target prop-info val)
+        :default (.SetValue prop-info target val nil)))
+
+(defn- set-event [target event-info val]
+  (if (ifn? val)
+    (val event-info target)
+    (.Invoke (.GetAddMethod event-info) target (to-array [val]))))
+
+(defn- call-method [target method-info val]
+  (.Invoke method-info target (to-array val)))
+
+(defn- set-member-by-key [target key val]
+  (let [name (name key)]
+        (let [members (.GetMember (.GetType target) name)]
+          (if-let [member (first members)]
+            (cond
+             (instance? PropertyInfo member) (set-prop target member val)
+             (instance? EventInfo member) (set-event target member val)
+             (instance? MethodInfo member) (call-method target member val)
+             :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " target))))
+            (throw (MissingMemberException. (str (.GetType target)) name))))))
+
+(defn- set-by-key [target key val]
+  (cond (instance? BindingBase val) (bind target key val)
+        (= key :*cur*) (val target) ; Invoke val on current target
+        :default (set-member-by-key target key val)))
+
 (defn pset! [target & setters]
   (when target
-    (doseq [[key val] (partition 2 setters)]
-      (cond
-       (fn? val) (set-event-by-key target key val)
-       (instance? BindingBase val) (bind target key val)
-       (vector? val) (set-property-collection target key val)
-       (instance? AttachedData key) (attach key target val)
-       :default (set-property-by-key target key val)))
+    (bind [*cur* target]
+          (doseq [[key val] (partition 2 setters)]
+            (cond
+             (keyword? key) (set-by-key target key val)
+                                        ;(fn? val) (set-event-by-key target key val)
+                                        ;(instance? BindingBase val) (bind target key val)
+             (vector? val) (set-property-collection target key val)
+             (instance? AttachedData key) (attach key target val)
+             :default (set-property-by-key target key val))))
     target))
 
 (defmacro defattached [name & opts]
