@@ -218,10 +218,10 @@
       (let [elem (Activator/CreateInstance (.get_UnderlyingType xt))
             more (rest forms)
             attrs? (first more)
-            attrs (when (map? attrs?) attrs?)
+            attrs (when (list? attrs?) attrs?)
             children (if attrs (rest more) more)]
         (when ename (.set_Name elem ename))
-        (when attrs (apply pset! (apply into [elem] attrs)))
+        (when attrs (apply pset! elem attrs))
         (when-let [child-elems (seq (for [c children] (if (string? c) c (caml* c))))]
           (let [cp (.get_ContentProperty xt)
                 invoker (.get_Invoker cp)
