@@ -114,10 +114,12 @@
   clojure.lang.IFn
   (invoke [this target] (.GetValue target prop)))
 
+(defn create-attached-data [^DependencyProperty prop] (AttachedData. prop))
+
 (defn- event-dg-helper [target evt-method-info handler]
   (let [dg (if-not (instance? Delegate handler)
                  (gen-delegate (.ParameterType (aget (.GetParameters evt-method-info) 0))
-                               [s e] (handler s e))
+                               [s e] (binding [*cur* target] (handler s e)))
                  handler)]
         (.Invoke evt-method-info target (to-array [dg]))
         dg))
@@ -194,7 +196,7 @@
         (let [members (.GetMember (.GetType target) name)]
           (if-let [member (first members)]
             (do
-              (println "Member " member)
+              ;(println "Member " member)
               (cond
                (instance? PropertyInfo member) (set-prop target member val)
                (instance? EventInfo member) (event-add target member val)
@@ -223,10 +225,11 @@
 (defmacro defattached [name & opts]
   (let [qname (str *ns* "/" (clojure.core/name name))]
     `(clojure.core/defonce ~name
-       (System.Windows.DependencyProperty/RegisterAttached
-        ~qname System.Object System.Object
-        (ClojureWpf.core/pset! (System.Windows.FrameworkPropertyMetadata.)
-         :Inherited true ~@opts)))))
+       (ClojureWpf.core/create-attached-data
+        (System.Windows.DependencyProperty/RegisterAttached
+         ~qname System.Object System.Object
+         (ClojureWpf.core/pset! (System.Windows.FrameworkPropertyMetadata.)
+                                :Inherits true ~@opts))))))
 
 (defn find-elem [target path]
   (if (empty? path)
@@ -244,7 +247,7 @@
   (let [was-key (atom false)]
     (split-with (fn [x]
                   (cond
-                   (keyword? x) (do (reset! was-key true) true)
+                   (not (list? x)) (do (reset! was-key true) true)
                    @was-key (do (reset! was-key false) true)
                    :default false)) forms)))
 
@@ -272,7 +275,7 @@
                        setters (rest form)]
                    `(ClojureWpf.core/at* (ClojureWpf.core/find-elem-warn ~target ~path) ~setters)))]
     `(do (ClojureWpf.core/pset! ~target ~@target-attrs)
-         ~@xforms))))))
+         ~@xforms)))
 
 (defmacro at [target & forms]
   (let [[dispatcher-obj target] (compile-target-expr target)]
