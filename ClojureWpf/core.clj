@@ -2,7 +2,7 @@
   (:import [System.Windows.Markup XamlReader]
            [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart EventWaitHandle EventResetMode]
            [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
-           [System.Windows Application Window EventManager DependencyProperty LogicalTreeHelper]
+           [System.Windows Application Window EventManager DependencyProperty FrameworkPropertyMetadata LogicalTreeHelper]
            [System.Windows.Data BindingBase Binding BindingOperations]
            [System.Reflection BindingFlags]
            [System.ComponentModel PropertyDescriptor MemberDescriptor]
@@ -84,18 +84,6 @@
   (let [xaml (slurp path :econding "UTF8")]
     (XamlReader/Parse xaml)))
 
-(comment (defn exec-spec [uispec {:keys [dev]}]
-           (let [dev-path (:dev-path uispec)
-                 ctr (:constructor uispec)
-                 elem (if (and dev dev-path) (load-dev-xaml dev-path) ctr)]
-             ((:mutator uispec) elem)
-             elem))
-
-         (defrecord UISpec [constructor mutator dev-path]
-           clojure.lang.IFn
-           (invoke [this opts] :a)
-           (invoke [this] :b)))
-
 (defn make-ui-spec
   ([constructor
     mutator
@@ -113,6 +101,18 @@
    elem-mutator &
    [xaml-dev-path & opts]]
   `(def ~name (ClojureWpf.core/make-ui-spec ~elem-constructor ~elem-mutator ~xaml-dev-path)))
+
+(def ^:dynamic *cur* nil)
+
+(defprotocol IAttachedData (attach [this target value]))
+
+(defrecord AttachedData [^DependencyProperty prop]
+  clojure.lang.IDeref
+  (deref [this] (when *cur* (.GetValue *cur* prop)))
+  IAttachedData
+  (attach [this target value] (.SetValue target prop value))
+  clojure.lang.IFn
+  (invoke [this target] (.GetValue target prop)))
 
 (defn- event-helper [target event-key handler prefix]
   (let [mname (str prefix (name event-key))]
@@ -167,13 +167,22 @@
 
 (defn pset! [target & setters]
   (when target
-    (with-invoke target
-      (doseq [[key val] (partition 2 setters)]
-        (cond
-         (fn? val) (set-event-by-key target key val)
-         (instance? BindingBase val) (bind target key val)
-         (vector? val) (set-property-collection target key val)
-         :default (set-property-by-key target key val))))))
+    (doseq [[key val] (partition 2 setters)]
+      (cond
+       (fn? val) (set-event-by-key target key val)
+       (instance? BindingBase val) (bind target key val)
+       (vector? val) (set-property-collection target key val)
+       (instance? AttachedData key) (attach key target val)
+       :default (set-property-by-key target key val)))
+    target))
+
+(defmacro defattached [name & opts]
+  (let [qname (str *ns* "/" (clojure.core/name name))]
+    `(clojure.core/defonce ~name
+       (System.Windows.DependencyProperty/RegisterAttached
+        ~qname System.Object System.Object
+        (ClojureWpf.core/pset! (System.Windows.FrameworkPropertyMetadata.)
+         :Inherited true ~@opts)))))
 
 (defn find-elem [target path]
   (if (empty? path)
