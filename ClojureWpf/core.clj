@@ -183,20 +183,23 @@
         :default (.SetValue prop-info target val nil)))
 
 (defn- event-add [target event-info handler]
-  (event-dg-helper target (.GetAddMethod event-info) target val))
+  (event-dg-helper target (.GetAddMethod event-info) handler))
 
 (defn- call-method [target method-info val]
+  (println "Invoking " method-info)
   (.Invoke method-info target (to-array val)))
 
 (defn- set-member-by-key [target key val]
   (let [name (name key)]
         (let [members (.GetMember (.GetType target) name)]
           (if-let [member (first members)]
-            (cond
-             (instance? PropertyInfo member) (set-prop target member val)
-             (instance? EventInfo member) (event-add target member val)
-             (instance? MethodInfo member) (call-method target member val)
-             :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " target))))
+            (do
+              (println "Member " member)
+              (cond
+               (instance? PropertyInfo member) (set-prop target member val)
+               (instance? EventInfo member) (event-add target member val)
+               (instance? MethodInfo member) (call-method target member val)
+               :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " target)))))
             (throw (MissingMemberException. (str (.GetType target)) name))))))
 
 (defn- set-by-key [target key val]
@@ -231,17 +234,6 @@
     (let [name (name (first path))]
       (LogicalTreeHelper/FindLogicalNode target name))))
 
-(defmacro doat [target & body]
-  (let [path? (vector? target)
-        dispatcher-obj (if path? (first target) target)
-        path-expr (when path? (vec (rest target)))
-        target (if path?
-          `(ClojureWpf.core/find-elem ~dispatcher-obj ~path-expr)
-          target)]
-    `(ClojureWpf.core/with-invoke ~dispatcher-obj
-       (clojure.core/binding [ClojureWpf.core/*cur* ~target]
-                             ~@body))))
-
 
 (defn find-elem-warn [target path]
   (if-let [elem (find-elem target path)]
@@ -256,15 +248,36 @@
                    @was-key (do (reset! was-key false) true)
                    :default false)) forms)))
 
-(defmacro at [target & forms]
+(defn- compile-target-expr [target]
+  (let [path? (vector? target)
+        dispatcher-obj (if path? (first target) target)
+        path-expr (when path? (vec (rest target)))
+        target (if path?
+          `(ClojureWpf.core/find-elem-warn ~dispatcher-obj ~path-expr)
+          target)]
+    [dispatcher-obj target]))
+
+(defmacro doat [target & body]
+  (let [[dispatcher-obj target] (compile-target-expr target)]
+    `(ClojureWpf.core/with-invoke ~dispatcher-obj
+       (clojure.core/binding [ClojureWpf.core/*cur* ~target]
+                             ~@body))))
+
+(declare at*)
+
+(defmacro at* [target forms]
   (let [[target-attrs forms] (split-attrs-forms forms)
         xforms (for [form forms]
                  (let [path (first form)
                        setters (rest form)]
-                   `(ClojureWpf.core/pset! (ClojureWpf.core/find-elem-warn ~target ~path) ~@setters)))]
-    `(ClojureWpf.core/with-invoke ~target
-       (ClojureWpf.core/pset! ~target ~@target-attrs)
-       ~@xforms)))
+                   `(ClojureWpf.core/at* (ClojureWpf.core/find-elem-warn ~target ~path) ~setters)))]
+    `(do (ClojureWpf.core/pset! ~target ~@target-attrs)
+         ~@xforms))))))
+
+(defmacro at [target & forms]
+  (let [[dispatcher-obj target] (compile-target-expr target)]
+    `(ClojureWpf.core/with-invoke ~dispatcher-obj
+       (ClojureWpf.core/at* ~target ~forms))))
 
 (def xaml-map
   (apply assoc {}
