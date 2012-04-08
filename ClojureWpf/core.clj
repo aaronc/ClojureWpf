@@ -21,7 +21,6 @@
 (defmacro with-invoke [dispatcher-obj & body]
   `(ClojureWpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
 
-
 (defn with-begin-invoke* [dispatcher-obj func]
   (let [dispatcher (.get_Dispatcher dispatcher-obj)]
     (if (.CheckAccess dispatcher)
@@ -31,6 +30,27 @@
 
 (defmacro with-begin-invoke [dispatcher-obj & body]
   `(ClojureWpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
+
+(defn find-elem [target path] (reduce #(LogicalTreeHelper/FindLogicalNode % (name %2)) target path))
+
+(defn find-elem-warn [target path]
+  (or (find-elem target path) (println "Unable to find " path " in " target)))
+
+(defn- compile-target-expr [target]
+  (let [path? (vector? target)
+        dispatcher-obj (if path? (first target) target)
+        path-expr (when path? (vec (rest target)))
+        target (if path?
+          `(ClojureWpf.core/find-elem-warn ~dispatcher-obj ~path-expr)
+          target)]
+    [dispatcher-obj target]))
+
+(defmacro doat [target & body]
+  (let [[dispatcher-obj target] (compile-target-expr target)]
+    `(ClojureWpf.core/with-invoke ~dispatcher-obj
+       (clojure.core/binding [ClojureWpf.core/*cur* ~target]
+                             ~@body))))
+
 
 (def *dispatcher-exception (atom nil))
 
@@ -60,7 +80,6 @@
     (.WaitOne waitHandle)
     {:thread thread :window @window}))
     
-
 (defn app-start [application-class]
   (doto (Thread.
          (gen-delegate ThreadStart [] (.Run (Activator/CreateInstance application-class))))
@@ -86,23 +105,15 @@
   (let [xaml (slurp path :econding "UTF8")]
     (XamlReader/Parse xaml)))
 
-(defn make-ui-spec
+(defn xamlview
   ([constructor
     mutator
-    dev-path]
+    dev-xaml-path]
      (let [func (fn [& {:keys [dev]}]
-                  (let [elem (if (and dev dev-path) (load-dev-xaml dev-path) (constructor))]
+                  (let [elem (if (and dev dev-xaml-path) (load-dev-xaml dev-xaml-path) (constructor))]
                     (mutator elem)
                     elem))]
-       (sandbox-load func)
        func)))
-
-(defmacro defui
-  [name
-   elem-constructor
-   elem-mutator &
-   [xaml-dev-path & opts]]
-  `(def ~name (ClojureWpf.core/make-ui-spec ~elem-constructor ~elem-mutator ~xaml-dev-path)))
 
 (defprotocol IAttachedData (attach [this target value]))
 
@@ -134,41 +145,24 @@
 
 (defn -= [target event-key handler] (event-helper target event-key handler "remove_"))
 
-(defn find-static-field [type fname]
-  (if-let [f (.GetFields type fname (enum-or BindingFlags/Static BindingFlags/Public))]
-      (.GetValue f)
-      (throw (System.MissingFieldException. (str type) fname))))
+(defn get-static-field [type fname]
+  (when-let [f (.GetField type fname (enum-or BindingFlags/Static BindingFlags/Public))]
+      (.GetValue f nil)))
+
+(defn get-static-field-throw [type fname]
+  (or (get-static-field type fname) (throw (System.MissingFieldException. (str type) fname))))
 
 (defn find-dep-prop [type key]
-  (find-static-field type (str (name key) "Property")))
+  (get-static-field type (str (name key) "Property")))
 
 (defn find-routed-event [type key]
-  (find-static-field type (str (name key) "Event")))
+  (get-static-field type (str (name key) "Event")))
 
 (defn bind [target key binding]
   (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop target key))]
     (BindingOperations/SetBinding target dep-prop binding)))
 
-(defn set-property-by-key [target key val]
-  (if (instance? DependencyProperty key)
-    (.SetValue target key val)
-    (let [mname (str "set_" (name key))]
-      (if-let [m (.GetMethod (.GetType target) mname)]
-        (.Invoke m target (to-array [val]))
-        (throw (System.MissingMethodException. (str (.GetType target)) mname))))))
-
 (declare caml)
-
-(defn set-property-collection [target key val]
-  (if-let [prop (.GetProperty (.GetType target) (name key))]
-    (let [existing (.GetValue prop target nil)
-          items (apply caml val)]
-      (if (and existing (instance? ICollection existing))
-        (doseq [item items] (.Add existing item))
-        (.SetValue prop target items nil)))
-    (throw (System.MissingMethodException. (str (.GetType target)) (name key)))))
-
-(defn set-event-by-key [target key val] (+= target key val))
 
 (defn- mutate-prop [target prop-info func]
   (let [val (.GetValue prop-info target nil)
@@ -186,39 +180,9 @@
       (println "Don't know how to apply vector to " existing))
     (println "No existing collection for " target " " prop-info)))
 
-(defn- set-prop [target prop-info val]
-  (cond (fn? val) (mutate-prop target prop-info val)
-        (vector? val) (set-prop-collection target prop-info val)
-        :default (.SetValue prop-info target val nil)))
-
-(defn- event-add [target event-info handler]
-  (event-dg-helper target (.GetAddMethod event-info) handler))
-
-(defn- call-method [target method-info val]
-  (println "Invoking " method-info)
-  (.Invoke method-info target (to-array val)))
-
-(defn- set-member-by-key [target key val]
-  (let [name (name key)]
-        (let [members (.GetMember (.GetType target) name)]
-          (if-let [member (first members)]
-            (do
-              (println "Member " member)
-              (cond
-               (instance? PropertyInfo member) (set-prop target member val)
-               (instance? EventInfo member) (event-add target member val)
-               (instance? MethodInfo member) (call-method target member val)
-               :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " target)))))
-            (throw (MissingMemberException. (str (.GetType target)) name))))))
-
-(defn- set-by-key [target key val]
-  (cond (instance? BindingBase val) (bind target key val)
-        (= key :*cur*) (val target) ; Invoke val on current target
-        :default (set-member-by-key target key val)))
-
 (defn- pset-property-closure [type prop-info]
-  (let [dep-prop (find-dep-prop type)]
-    (fn [target value]
+  (let [dep-prop (find-dep-prop type (.Name prop-info))]
+    (fn [target val]
       (cond (fn? val) (mutate-prop target prop-info val)
         (vector? val) (set-prop-collection target prop-info val)
         :default (.SetValue prop-info target val nil)))))
@@ -239,13 +203,13 @@
               (cond
                (instance? PropertyInfo member) (pset-property-closure type member)
                (instance? EventInfo member) (pset-event-closure type member)
-               (instance? MethodInfo member) (call-method type member val)
+               (instance? MethodInfo member) (pset-method-closure type member)
                :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
             (throw (MissingMemberException. (str type) name))))))
 
 (defn- pset-compile-keyword [type kw]
   (let [])
-  (cond (instance? BindingBase val) (fn [t v] (bind t key v))
+  (cond ;(instance? BindingBase val) (fn [t v] (bind t kw v))
         (= key :*cur*) (fn [t v] (v t)) ; Invoke val on current target
         :default (pset-compile-member-key type kw)))
 
@@ -256,27 +220,32 @@
    (instance? DependencyProperty key) (throw (NotImplementedException.))
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
 
-(defn pset-exec [target type setters]
-  (binding [*cur* target]
-    (doseq [[key val] (partition 2 setters)]
-           ((pset-compile-key type key) target val))))
+(defn pset-exec [target & setters]
+  (let [type (.GetType target)]
+    (doat target
+      (doseq [[key val] (partition 2 setters)]
+        ((pset-compile-key type key) target val)))))
 
-(defn pset-compile [type setters]
-  (for [[key val] (partition 2 setters)]
-    (pset-compile-key type key)))
+(defmacro ^:private pset-compile [type target setters]
+  (let 
+    `(do ~@funcs)))
 
-(defn pset! [target & setters]
-  (when target
-    (binding [*cur* target]
-          (doseq [[key val] (partition 2 setters)]
-            (cond
-             (keyword? key) (set-by-key target key val)
-                                        ;(fn? val) (set-event-by-key target key val)
-                                        ;(instance? BindingBase val) (bind target key val)
-             (vector? val) (set-property-collection target key val)
-             (instance? AttachedData key) (attach key target val)
-             :default (set-property-by-key target key val))))
-    target))
+(defmacro ^:private when-type? [t] `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t))
+
+(defmacro pset!* [type target setters]
+  (if-let [type (when-type? type)]
+    (let [mutator-vals (for [[key val] (partition 2 setters)]
+                       [(pset-compile-key type key) val])
+          funcs (for [[m v] mutator-vals] `(~m ~target ~v))]
+      `(~@funcs))
+    `(ClojureWpf.core/pset-exec ~target ~@setters)))
+
+(defmacro pset! [& forms]
+  (let [type-target? (first forms)
+        type (when-type? type-target?) 
+        target (if type (second forms) type-target?)
+        setters (if type (nnext forms) (next forms))]
+    `(ClojureWpf.core/pset!* ~type ~target ~setters)))
 
 (defmacro defattached [name & opts]
   (let [qname (str *ns* "/" (clojure.core/name name))]
@@ -287,18 +256,6 @@
          (ClojureWpf.core/pset! (System.Windows.FrameworkPropertyMetadata.)
                                 :Inherits true ~@opts))))))
 
-(defn find-elem [target path]
-  (if (empty? path)
-    target
-    (let [name (name (first path))]
-      (LogicalTreeHelper/FindLogicalNode target name))))
-
-
-(defn find-elem-warn [target path]
-  (if-let [elem (find-elem target path)]
-    elem
-    (println "Unable to find " path " in " target)))
-
 (defn- split-attrs-forms [forms]
   (let [was-key (atom false)]
     (split-with (fn [x]
@@ -306,22 +263,6 @@
                    (not (list? x)) (do (reset! was-key true) true)
                    @was-key (do (reset! was-key false) true)
                    :default false)) forms)))
-
-(defn- compile-target-expr [target]
-  (let [path? (vector? target)
-        dispatcher-obj (if path? (first target) target)
-        path-expr (when path? (vec (rest target)))
-        target (if path?
-          `(ClojureWpf.core/find-elem-warn ~dispatcher-obj ~path-expr)
-          target)]
-    [dispatcher-obj target]))
-
-(defmacro doat [target & body]
-  (let [[dispatcher-obj target] (compile-target-expr target)]
-    `(ClojureWpf.core/with-invoke ~dispatcher-obj
-       (clojure.core/binding [ClojureWpf.core/*cur* ~target]
-                             ~@body))))
-
 (declare at*)
 
 (defmacro at* [target forms]
@@ -350,13 +291,14 @@
         tname (if ename (.Substring nexpr 0 enidx) nexpr)
         xt (xaml-map tname)]
     (when xt
-      (let [elem (Activator/CreateInstance (.get_UnderlyingType xt))
+      (let [type (.get_UnderlyingType xt)
+            elem (Activator/CreateInstance type)
             more (rest forms)
             attrs? (first more)
             attrs (when (list? attrs?) attrs?)
             children (if attrs (rest more) more)]
         (when ename (.set_Name elem ename))
-        (when attrs (apply pset! elem attrs))
+        (when attrs (pset!* nil elem attrs))
         (when-let [child-elems (seq (for [c children] (if (string? c) c (caml* c))))]
           (let [cp (.get_ContentProperty xt)
                 invoker (.get_Invoker cp)
