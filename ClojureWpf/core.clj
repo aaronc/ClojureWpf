@@ -134,16 +134,16 @@
 
 (defn -= [target event-key handler] (event-helper target event-key handler "remove_"))
 
-(defn find-static-field [target fname]
-  (if-let [f (.GetFields (.GetType target) fname (enum-or BindingFlags/Static BindingFlags/Public))]
+(defn find-static-field [type fname]
+  (if-let [f (.GetFields type fname (enum-or BindingFlags/Static BindingFlags/Public))]
       (.GetValue f)
-      (throw (System.MissingFieldException. (str (.GetType target)) fname))))
+      (throw (System.MissingFieldException. (str type) fname))))
 
-(defn find-dep-prop [target key]
-  (find-static-field target (str (name key) "Property")))
+(defn find-dep-prop [type key]
+  (find-static-field type (str (name key) "Property")))
 
-(defn find-routed-event [target key]
-  (find-static-field target (str (name key) "Event")))
+(defn find-routed-event [type key]
+  (find-static-field type (str (name key) "Event")))
 
 (defn bind [target key binding]
   (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop target key))]
@@ -177,7 +177,14 @@
       (.SetValue prop-info target mutated nil)
       mutated)))
 
-(defn- set-prop-collection [target prop-info coll])
+(defn- set-prop-collection [target prop-info val]
+  (if-let [existing (.GetValue prop-info target nil)]
+    (if (instance? ICollection val)
+      (do (println "Replacing collection " existing " with " val)
+          (.Clear existing)
+          (doseq [x val] (.Add existing x)))
+      (println "Don't know how to apply vector to " existing))
+    (println "No existing collection for " target " " prop-info)))
 
 (defn- set-prop [target prop-info val]
   (cond (fn? val) (mutate-prop target prop-info val)
@@ -196,7 +203,7 @@
         (let [members (.GetMember (.GetType target) name)]
           (if-let [member (first members)]
             (do
-              ;(println "Member " member)
+              (println "Member " member)
               (cond
                (instance? PropertyInfo member) (set-prop target member val)
                (instance? EventInfo member) (event-add target member val)
@@ -208,6 +215,55 @@
   (cond (instance? BindingBase val) (bind target key val)
         (= key :*cur*) (val target) ; Invoke val on current target
         :default (set-member-by-key target key val)))
+
+(defn- pset-property-closure [type prop-info]
+  (let [dep-prop (find-dep-prop type)]
+    (fn [target value]
+      (cond (fn? val) (mutate-prop target prop-info val)
+        (vector? val) (set-prop-collection target prop-info val)
+        :default (.SetValue prop-info target val nil)))))
+
+(defn- pset-event-closure [type event-info]
+  (let [add-method (.GetAddMethod event-info)]
+    (fn [target value] (event-dg-helper target add-method value))))
+
+(defn- pset-method-closure [type method-info]
+  (fn [target value] (.Invoke method-info target (to-array value))))
+
+(defn- pset-compile-member-key [type key]
+  (let [name (name key)]
+        (let [members (.GetMember type name)]
+          (if-let [member (first members)]
+            (do
+              (println "Member " member)
+              (cond
+               (instance? PropertyInfo member) (pset-property-closure type member)
+               (instance? EventInfo member) (pset-event-closure type member)
+               (instance? MethodInfo member) (call-method type member val)
+               :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
+            (throw (MissingMemberException. (str type) name))))))
+
+(defn- pset-compile-keyword [type kw]
+  (let [])
+  (cond (instance? BindingBase val) (fn [t v] (bind t key v))
+        (= key :*cur*) (fn [t v] (v t)) ; Invoke val on current target
+        :default (pset-compile-member-key type kw)))
+
+(defn pset-compile-key [type key]
+  (cond
+   (keyword? key) (pset-compile-keyword type key)
+   (instance? AttachedData key) (fn [t v] (attach key t v))
+   (instance? DependencyProperty key) (throw (NotImplementedException.))
+   :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
+
+(defn pset-exec [target type setters]
+  (binding [*cur* target]
+    (doseq [[key val] (partition 2 setters)]
+           ((pset-compile-key type key) target val))))
+
+(defn pset-compile [type setters]
+  (for [[key val] (partition 2 setters)]
+    (pset-compile-key type key)))
 
 (defn pset! [target & setters]
   (when target
