@@ -199,7 +199,6 @@
         (let [members (.GetMember type name)]
           (if-let [member (first members)]
             (do
-              (println "Member " member)
               (cond
                (instance? PropertyInfo member) (pset-property-closure type member)
                (instance? EventInfo member) (pset-event-closure type member)
@@ -230,14 +229,19 @@
   (let 
     `(do ~@funcs)))
 
-(defmacro ^:private when-type? [t] `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t))
+(defn ^:private when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
+
+(defn pset-compile [type setters]
+  (let [mutator-vals (for [[key val] (partition 2 setters)]
+                       [(pset-compile-key type key) val])
+        tsym (gensym "t")
+        exprs (for [[m v] mutator-vals] `(~m ~tsym ~v))]
+    `(fn [~tsym] (binding [ClojureWpf.core/*cur* ~tsym] ~@exprs))))
 
 (defmacro pset!* [type target setters]
   (if-let [type (when-type? type)]
-    (let [mutator-vals (for [[key val] (partition 2 setters)]
-                       [(pset-compile-key type key) val])
-          funcs (for [[m v] mutator-vals] `(~m ~target ~v))]
-      `(~@funcs))
+    (let [compiled (pset-compile type target setters)]
+      `((~compiled ~target) target))
     `(ClojureWpf.core/pset-exec ~target ~@setters)))
 
 (defmacro pset! [& forms]
@@ -282,38 +286,49 @@
 (def xaml-map
   (apply assoc {}
          (mapcat (fn [xt] [(.get_Name xt) xt])
-           (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
+                 (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
 
-(defn caml* [forms]
-  (let [nexpr (name (first forms))
+(declare caml-compile)
+
+(defn caml-children*-expr [invoker elem children]
+  `(let [existing# (.GetValue ~invoker ~elem)]
+    (if (and existing# (instance? ICollection existing#))
+      (doseq [ch# ~children] (.Add existing# ch#))
+      (.SetValue ~invoker ~elem ~children))))
+
+(defn caml-children-expr [xt type elem children]
+  (when (seq children)
+    (let [children* (vec (for [ch children]
+                           (if (and (list? ch) (keyword? (first ch)))
+                             (caml-compile ch) ch)))
+          cp (.get_ContentProperty xt)
+          invoker (.get_Invoker cp)]
+      (if (= 1 (count children*))
+        (let [content (first children*)] `(.SetValue ~invoker ~elem ~content))
+                      (caml-children*-expr invoker elem children*)))))
+
+(defn caml-compile [form]
+  (let [nexpr (name (first form))
         enidx (.IndexOf nexpr "#")
         ename (when (> enidx 0) (.Substring nexpr (inc enidx)))
         tname (if ename (.Substring nexpr 0 enidx) nexpr)
         xt (xaml-map tname)]
     (when xt
       (let [type (.get_UnderlyingType xt)
-            elem (Activator/CreateInstance type)
-            more (rest forms)
+            elem (gensym "e")
+            forms (if ename [`(.set_Name ~elem ~ename)] [])
+            more (rest form)
             attrs? (first more)
-            attrs (when (list? attrs?) attrs?)
-            children (if attrs (rest more) more)]
-        (when ename (.set_Name elem ename))
-        (when attrs (pset!* nil elem attrs))
-        (when-let [child-elems (seq (for [c children] (if (string? c) c (caml* c))))]
-          (let [cp (.get_ContentProperty xt)
-                invoker (.get_Invoker cp)
-                existingValue (.GetValue invoker elem)]
-            (if (and existingValue (instance? ICollection existingValue))
-              (doseq [ce child-elems] (when ce (.Add existingValue ce)))
-              (when (= 1 (count child-elems)) (.SetValue invoker elem (first child-elems))))))
-        elem))))
+            pset-fn (when (vector? attrs?)
+                      (pset-compile type attrs?))
+            forms (if pset-fn (conj forms pset-fn) forms)
+            children (if pset-fn (rest more) more)
+            children-expr (caml-children-expr xt type elem children)
+            forms (if children-expr (conj forms children-expr) forms)]
+        `(let [~elem (System.Activator/CreateInstance ~type)]
+           ~@forms
+           ~elem)))))
 
-(defn caml [& children]
-  (if (keyword? (first children))
-    (caml* children)
-    (vec (for [c children] (if (and (vector? c) (keyword? (first c))) (caml* c) c)))))
-
-(comment (defmacro caml [forms]
-           (let [fir (name (first forms))
-                 more (rest forms)]
-             `(caml* ~fir '[~@more]))))
+(defmacro caml [form]
+  (let [compiled (caml-compile form)]
+    `~compiled))
