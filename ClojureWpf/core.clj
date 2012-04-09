@@ -4,6 +4,7 @@
            [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
            [System.Windows Application Window EventManager DependencyProperty FrameworkPropertyMetadata LogicalTreeHelper]
            [System.Windows.Data BindingBase Binding BindingOperations]
+           [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler CanExecuteRoutedEventHandler]
            [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
            [System.ComponentModel PropertyDescriptor MemberDescriptor]
            [System.Xaml XamlSchemaContext]
@@ -38,8 +39,12 @@
 
 (defn- compile-target-expr [target]
   (let [path? (vector? target)
-        dispatcher-obj (if path? (first target) target)
-        path-expr (when path? (vec (rest target)))
+        target? (when path? (first target))
+        implicit-target? (when path? (keyword? target?))
+        dispatcher-obj (if path?
+                         (if implicit-target? `ClojureWpf.core/*cur* target?)
+                         target)
+        path-expr (when path? (if implicit-target? (vec target) (vec (rest target))))
         target (if path?
           `(ClojureWpf.core/find-elem-warn ~dispatcher-obj ~path-expr)
           target)]
@@ -48,6 +53,12 @@
 (defmacro doat [target & body]
   (let [[dispatcher-obj target] (compile-target-expr target)]
     `(ClojureWpf.core/with-invoke ~dispatcher-obj
+       (clojure.core/binding [ClojureWpf.core/*cur* ~target]
+                             ~@body))))
+
+(defmacro async-doat [target & body]
+  (let [[dispatcher-obj target] (compile-target-expr target)]
+    `(ClojureWpf.core/with-begin-invoke ~dispatcher-obj
        (clojure.core/binding [ClojureWpf.core/*cur* ~target]
                              ~@body))))
 
@@ -86,30 +97,23 @@
     (.SetApartmentState ApartmentState/STA)
     (.Start)))
 
-(def ^:dynamic *dev-mode* false)
 
-(def dev-sandbox-setter (atom nil))
-
-(defn dev-sandbox []
-  (let [sandbox (separate-threaded-window)
-        window (:window sandbox)]
-    (reset! dev-sandbox-setter
-            (fn [func] (with-invoke window (.set_Content window (func)))))
-    sandbox))
+(def ^:private xamlClassRegex #"x:Class=\"[\w\.]+\"")
 
 (defn- load-dev-xaml [path]
-  (let [xaml (slurp path :econding "UTF8")]
+  (let [xaml (slurp path :econding "UTF8")
+        xaml (.Replace xamlClassRegex xaml "")]
     (XamlReader/Parse xaml)))
 
-(defn xamlview
+(def ^:dynamic *dev-mode* false)
+ 
+(defn xaml-view
   ([constructor
     mutator
     dev-xaml-path]
-     (let [func (fn []
-                  (let [elem (if (and *dev-mode* dev-xaml-path) (load-dev-xaml dev-xaml-path) (constructor))]
-                    (mutator elem)
-                    elem))]
-       func)))
+     (fn [] (let [view (if (and *dev-mode* dev-xaml-path) (load-dev-xaml dev-xaml-path) (constructor))]
+             (mutator view)
+             view))))
 
 (defprotocol IAttachedData (attach [this target value]))
 
@@ -140,6 +144,15 @@
 (defn += [target event-key handler] (event-helper target event-key handler "add_"))
 
 (defn -= [target event-key handler] (event-helper target event-key handler "remove_"))
+
+(defn command-binding
+  ([^ICommand command exec-fn can-exec-fn]
+     (CommandBinding. command
+                      (gen-delegate ExecutedRoutedEventHandler [s e] (exec-fn s e))
+                      (when can-exec-fn
+                        (gen-delegate CanExecuteRoutedEventHandler [s e] (can-exec-fn s e)))))
+  ([^ICommand command exec-fn]
+     (command-binding command exec-fn nil)))
 
 (defn get-static-field [type fname]
   (when-let [f (.GetField type fname (enum-or BindingFlags/Static BindingFlags/Public))]
@@ -201,12 +214,15 @@
             (throw (MissingMemberException. (str type) name))))))
 
 (defn- pset-compile-keyword [type kw]
-  (let [])
-  (cond ;(instance? BindingBase val) (fn [t v] (bind t kw v))
-        (= key :*cur*) (fn [t v] (v t)) ; Invoke val on current target
+  (cond 
+   (= kw :*cur*) (fn [t v]
+                    (cond
+                     (fn? v) (v t) ; Invoke val on current target
+                     (instance? CommandBinding v) (.Add (.CommandBindings t) v)
+                     :default (throw (ArgumentException. (str "Don't know how to apply " v " to " t " in :*cur setter")))))
         :default (pset-compile-member-key type kw)))
 
-(defn- pset-compile-key [type key]
+(defn pset-compile-key [type key]
   (cond
    (keyword? key) (pset-compile-keyword type key)
    (instance? AttachedData key) (fn [t v] (attach key t v))
@@ -243,18 +259,19 @@
          ~@(for [[key val] key-vals] `((ClojureWpf.core/pset-compile-key ~tsym ~key) ~target ~val))))))
 
 (defn- pset-compile [type target setters]
-  `(binding [*cur* ~target] ~(pset-compile* type target setters)))
+  (let [tsym `ClojureWpf.core/*cur*]
+    `(binding [ClojureWpf.core/*cur* ~target] ~(pset-compile* type tsym setters) ClojureWpf.core/*cur*)))
 
 (defmacro pset!* [type target setters]
   (let [type (when-type? type)]
-    `(~(pset-compile type target setters) target)))
+    (pset-compile type target setters)))
 
 (defmacro pset! [& forms]
   (let [type-target? (first forms)
         type (when-type? type-target?) 
         target (if type (second forms) type-target?)
         setters (if type (nnext forms) (next forms))]
-    `(ClojureWpf.core/pset!* ~type ~target ~setters)))
+    (pset-compile type target setters)))
 
 (defmacro defattached [name & opts]
   (let [qname (str *ns* "/" (clojure.core/name name))]
@@ -265,6 +282,8 @@
          (ClojureWpf.core/pset! (System.Windows.FrameworkPropertyMetadata.)
                                 :Inherits true ~@opts))))))
 
+(defattached cur-view)
+
 (defn- split-attrs-forms [forms]
   (let [was-key (atom false)]
     (split-with (fn [x]
@@ -272,22 +291,30 @@
                    (not (list? x)) (do (reset! was-key true) true)
                    @was-key (do (reset! was-key false) true)
                    :default false)) forms)))
-(declare at*)
+
+(declare at-compile)
 
 (defn at-compile [target forms]
   (let [[target-attrs forms] (split-attrs-forms forms)
+        tsym (gensym "t")
         xforms (for [form forms]
                  (let [path (first form)
                        setters (rest form)]
-                   (at-compile `(ClojureWpf.core/find-elem-warn ~target ~path) ~setters)))
-        pset-expr (pset-compile nil target target-attrs)]
-    `(do ~pset-expr
-         ~@xforms)))
+                   (at-compile `(ClojureWpf.core/find-elem-warn ~tsym ~path) setters)))
+        pset-expr (pset-compile nil tsym target-attrs)]
+    `(do (let [~tsym ~target] ~pset-expr
+              ~@xforms))))
 
 (defmacro at [target & forms]
   (let [[dispatcher-obj target] (compile-target-expr target)
         at-expr (at-compile target forms)]
     `(ClojureWpf.core/with-invoke ~dispatcher-obj
+       ~at-expr)))
+
+(defmacro async-at [target & forms]
+  (let [[dispatcher-obj target] (compile-target-expr target)
+        at-expr (at-compile target forms)]
+    `(ClojureWpf.core/with-begin-invoke ~dispatcher-obj
        ~at-expr)))
 
 (def xaml-map
@@ -337,3 +364,21 @@
 (defmacro caml [form]
   (let [compiled (caml-compile form)]
     `~compiled))
+
+(defattached dev-sandbox-refresh)
+
+(defn set-sandbox-refresh [sandbox func]
+  (let [window (:window sandbox)]
+    (at window dev-sandbox-refresh (fn [] (at window :Content (func))))))
+
+(defn- sandbox-refresh [s e] 
+  (binding [*cur* s]
+    (when-let [on-refresh @dev-sandbox-refresh]
+      (binding [*dev-mode* true] (on-refresh)))))
+
+(defn dev-sandbox []
+  (let [sandbox (separate-threaded-window)
+        window (:window sandbox)]
+    (at window
+        :*cur* (command-binding System.Windows.Input.NavigationCommands/Refresh #'sandbox-refresh))
+    sandbox))
