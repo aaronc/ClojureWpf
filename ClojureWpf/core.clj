@@ -86,6 +86,8 @@
     (.SetApartmentState ApartmentState/STA)
     (.Start)))
 
+(def ^:dynamic *dev-mode* false)
+
 (def dev-sandbox-setter (atom nil))
 
 (defn dev-sandbox []
@@ -95,12 +97,6 @@
             (fn [func] (with-invoke window (.set_Content window (func)))))
     sandbox))
 
-(defn sandbox-load [func]
-  (when @dev-sandbox-setter
-    (@dev-sandbox-setter (fn [] (func :dev true)))))
-
-(defn set-live-reload! [enable])
-
 (defn- load-dev-xaml [path]
   (let [xaml (slurp path :econding "UTF8")]
     (XamlReader/Parse xaml)))
@@ -109,8 +105,8 @@
   ([constructor
     mutator
     dev-xaml-path]
-     (let [func (fn [& {:keys [dev]}]
-                  (let [elem (if (and dev dev-xaml-path) (load-dev-xaml dev-xaml-path) (constructor))]
+     (let [func (fn []
+                  (let [elem (if (and *dev-mode* dev-xaml-path) (load-dev-xaml dev-xaml-path) (constructor))]
                     (mutator elem)
                     elem))]
        func)))
@@ -173,18 +169,16 @@
 
 (defn- set-prop-collection [target prop-info val]
   (if-let [existing (.GetValue prop-info target nil)]
-    (if (instance? ICollection val)
-      (do (println "Replacing collection " existing " with " val)
-          (.Clear existing)
+    (if (instance? ICollection existing)
+      (do (.Clear existing)
           (doseq [x val] (.Add existing x)))
-      (println "Don't know how to apply vector to " existing))
-    (println "No existing collection for " target " " prop-info)))
+      (.SetValue prop-info target val nil))))
 
 (defn- pset-property-closure [type prop-info]
   (let [dep-prop (find-dep-prop type (.Name prop-info))]
     (fn [target val]
       (cond (fn? val) (mutate-prop target prop-info val)
-        (vector? val) (set-prop-collection target prop-info val)
+        (sequential? val) (set-prop-collection target prop-info val)
         :default (.SetValue prop-info target val nil)))))
 
 (defn- pset-event-closure [type event-info]
