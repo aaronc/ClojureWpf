@@ -162,7 +162,7 @@
   (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop target key))]
     (BindingOperations/SetBinding target dep-prop binding)))
 
-(declare caml)
+(declare caml-compile)
 
 (defn- mutate-prop [target prop-info func]
   (let [val (.GetValue prop-info target nil)
@@ -212,37 +212,48 @@
         (= key :*cur*) (fn [t v] (v t)) ; Invoke val on current target
         :default (pset-compile-member-key type kw)))
 
-(defn pset-compile-key [type key]
+(defn- pset-compile-key [type key]
   (cond
    (keyword? key) (pset-compile-keyword type key)
    (instance? AttachedData key) (fn [t v] (attach key t v))
    (instance? DependencyProperty key) (throw (NotImplementedException.))
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
 
-(defn pset-exec [target & setters]
+(defn- caml-form? [x] (and (list? x) (keyword? (first x))))
+
+(defn- pset-compile-val [val]
+  (cond
+   (caml-form? val) (caml-compile val)
+   (vector? val) (vec (for [x val]
+                        (if (caml-form? x) (caml-compile x) x)))
+   :default val))
+
+(defn- pset-compile-late [target setters]
   (let [type (.GetType target)]
-    (doat target
-      (doseq [[key val] (partition 2 setters)]
-        ((pset-compile-key type key) target val)))))
+    (binding [*cur* target]
+     (doseq [[key val] (partition 2 setters)]
+       ((pset-compile-key type key) target val)))
+    target))
 
-(defmacro ^:private pset-compile [type target setters]
-  (let 
-    `(do ~@funcs)))
+(defn- when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
 
-(defn ^:private when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
+(defn- pset-compile* [type target setters]
+  (if type
+    (let [mutator-vals (for [[key val] (partition 2 setters)]
+                         [(pset-compile-key type key) (pset-compile-val val)])]
+      `(do ~@(for [[m v] mutator-vals] `(~m ~target ~v))))
+    (let [key-vals (for [[key val] (partition 2 setters)]
+                     [key (pset-compile-val val)])
+          tsym (gensym "type")]
+      `(let [~tsym (.GetType ~target)]
+         ~@(for [[key val] key-vals] `((ClojureWpf.core/pset-compile-key ~tsym ~key) ~target ~val))))))
 
-(defn pset-compile [type setters]
-  (let [mutator-vals (for [[key val] (partition 2 setters)]
-                       [(pset-compile-key type key) val])
-        tsym (gensym "t")
-        exprs (for [[m v] mutator-vals] `(~m ~tsym ~v))]
-    `(fn [~tsym] (binding [ClojureWpf.core/*cur* ~tsym] ~@exprs))))
+(defn- pset-compile [type target setters]
+  `(binding [*cur* ~target] ~(pset-compile* type target setters)))
 
 (defmacro pset!* [type target setters]
-  (if-let [type (when-type? type)]
-    (let [compiled (pset-compile type target setters)]
-      `((~compiled ~target) target))
-    `(ClojureWpf.core/pset-exec ~target ~@setters)))
+  (let [type (when-type? type)]
+    `(~(pset-compile type target setters) target)))
 
 (defmacro pset! [& forms]
   (let [type-target? (first forms)
@@ -269,26 +280,27 @@
                    :default false)) forms)))
 (declare at*)
 
-(defmacro at* [target forms]
+(defn at-compile [target forms]
   (let [[target-attrs forms] (split-attrs-forms forms)
         xforms (for [form forms]
                  (let [path (first form)
                        setters (rest form)]
-                   `(ClojureWpf.core/at* (ClojureWpf.core/find-elem-warn ~target ~path) ~setters)))]
-    `(do (ClojureWpf.core/pset! ~target ~@target-attrs)
+                   (at-compile `(ClojureWpf.core/find-elem-warn ~target ~path) ~setters)))
+        pset-expr (pset-compile nil target target-attrs)]
+    `(do ~pset-expr
          ~@xforms)))
 
 (defmacro at [target & forms]
-  (let [[dispatcher-obj target] (compile-target-expr target)]
+  (let [[dispatcher-obj target] (compile-target-expr target)
+        at-expr (at-compile target forms)]
     `(ClojureWpf.core/with-invoke ~dispatcher-obj
-       (ClojureWpf.core/at* ~target ~forms))))
+       ~at-expr)))
 
 (def xaml-map
   (apply assoc {}
          (mapcat (fn [xt] [(.get_Name xt) xt])
                  (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
 
-(declare caml-compile)
 
 (defn caml-children*-expr [invoker elem children]
   `(let [existing# (.GetValue ~invoker ~elem)]
@@ -299,8 +311,7 @@
 (defn caml-children-expr [xt type elem children]
   (when (seq children)
     (let [children* (vec (for [ch children]
-                           (if (and (list? ch) (keyword? (first ch)))
-                             (caml-compile ch) ch)))
+                           (if (caml-form? ch) (caml-compile ch) ch)))
           cp (.get_ContentProperty xt)
           invoker (.get_Invoker cp)]
       (if (= 1 (count children*))
@@ -319,10 +330,10 @@
             forms (if ename [`(.set_Name ~elem ~ename)] [])
             more (rest form)
             attrs? (first more)
-            pset-fn (when (vector? attrs?)
-                      (pset-compile type attrs?))
-            forms (if pset-fn (conj forms pset-fn) forms)
-            children (if pset-fn (rest more) more)
+            pset-expr (when (vector? attrs?)
+                      (pset-compile type elem attrs?))
+            forms (if pset-expr (conj forms pset-expr) forms)
+            children (if pset-expr (rest more) more)
             children-expr (caml-children-expr xt type elem children)
             forms (if children-expr (conj forms children-expr) forms)]
         `(let [~elem (System.Activator/CreateInstance ~type)]
