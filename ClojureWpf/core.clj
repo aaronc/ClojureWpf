@@ -325,12 +325,12 @@
 
 (defn caml-children*-expr [invoker elem children]
   `(let [existing# (.GetValue ~invoker ~elem)]
-    (if (and existing# (instance? ICollection existing#))
+    (if (and existing# (instance? System.Collections.ICollection existing#))
       (doseq [ch# ~children] (.Add existing# ch#))
       (.SetValue ~invoker ~elem ~children))))
 
 (defn caml-children-expr [xt type elem children]
-  (when (seq children)
+  (when (sequential? children)
     (let [children* (vec (for [ch children]
                            (if (caml-form? ch) (caml-compile ch) ch)))
           cp (.get_ContentProperty xt)
