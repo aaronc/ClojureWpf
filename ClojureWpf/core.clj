@@ -376,8 +376,8 @@
     (when-let [on-refresh @dev-sandbox-refresh]
       (binding [*dev-mode* true] (on-refresh)))))
 
-(defn dev-sandbox []
-  (let [sandbox (separate-threaded-window)
+(defn dev-sandbox [& options]
+  (let [sandbox (apply separate-threaded-window options)
         window (:window sandbox)]
     (at window
         :*cur* (command-binding System.Windows.Input.NavigationCommands/Refresh #'sandbox-refresh))
