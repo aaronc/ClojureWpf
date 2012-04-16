@@ -62,7 +62,6 @@
        (clojure.core/binding [ClojureWpf.core/*cur* ~target]
                              ~@body))))
 
-
 (def *dispatcher-exception (atom nil))
 
 (defn- dispatcher-unhandled-exception [sender args]
@@ -251,7 +250,7 @@
   (if type
     (let [mutator-vals (for [[key val] (partition 2 setters)]
                          [(pset-compile-key type key) (pset-compile-val val)])]
-      `(do ~@(for [[m v] mutator-vals] `(~m ~target ~v))))
+[]      `(do ~@(for [[m v] mutator-vals] `(~m ~target ~v))))
     (let [key-vals (for [[key val] (partition 2 setters)]
                      [key (pset-compile-val val)])
           tsym (gensym "type")]
@@ -330,7 +329,7 @@
       (.SetValue ~invoker ~elem ~children))))
 
 (defn caml-children-expr [xt type elem children]
-  (when (sequential? children)
+  (when (and (sequential? children) (seq children))
     (let [children* (vec (for [ch children]
                            (if (caml-form? ch) (caml-compile ch) ch)))
           cp (.get_ContentProperty xt)
