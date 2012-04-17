@@ -8,7 +8,8 @@
            [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
            [System.ComponentModel PropertyDescriptor MemberDescriptor]
            [System.Xaml XamlSchemaContext]
-           [System.Collections ICollection]))
+           [System.Collections ICollection]
+           [System.IO File]))
 
 (def ^:dynamic *cur* nil)
 
@@ -110,7 +111,7 @@
   ([constructor
     mutator
     dev-xaml-path]
-     (fn [] (let [view (if (and *dev-mode* dev-xaml-path) (load-dev-xaml dev-xaml-path) (constructor))]
+     (fn [] (let [view (if (and *dev-mode* dev-xaml-path (File/Exists dev-xaml-path)) (load-dev-xaml dev-xaml-path) (constructor))]
              (mutator view)
              view))))
 
@@ -368,7 +369,9 @@
 
 (defn set-sandbox-refresh [sandbox func]
   (let [window (:window sandbox)]
-    (at window dev-sandbox-refresh (fn [] (at window :Content (func))))))
+    (at window
+        dev-sandbox-refresh (fn [] (at window :Content (func)))
+        :*cur* (fn [wind] (.Execute System.Windows.Input.NavigationCommands/Refresh nil wind)))))
 
 (defn- sandbox-refresh [s e] 
   (binding [*cur* s]
