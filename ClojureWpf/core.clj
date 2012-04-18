@@ -173,6 +173,18 @@
 
 (declare caml-compile)
 
+(defn gen-invoke [method-str sym & args]
+  (let [method-sym (symbol (str "." method-str))]
+    `(~method-sym ~sym ~@args)))
+
+(defn- when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
+
+(defmacro pset-closure [name type args & body]
+  (let [[t v] args
+        type (when-type? type)
+        t (with-meta t {:tag type})]
+    `(fn ~name [~t ~v] ~@body)))
+
 (defn- mutate-prop [target prop-info func]
   (let [val (.GetValue prop-info target nil)
         mutated (func val)]
@@ -189,10 +201,42 @@
 
 (defn- pset-property-closure [type prop-info]
   (let [dep-prop (find-dep-prop type (.Name prop-info))]
-    (fn [target val]
+    (fn pset-property-fn [target val]
       (cond (fn? val) (mutate-prop target prop-info val)
         (sequential? val) (set-prop-collection target prop-info val)
         :default (.SetValue prop-info target val nil)))))
+
+(def ^:dynamic ^:private *pset-early-binding* false)
+
+(defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
+
+(defmethod pset-property-handler true [type prop-info target-sym val-sym]
+  (let [getter-name (.Name (.GetGetMethod prop-info))
+        getter-invoke (gen-invoke getter-name target-sym)
+        setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))]
+    (if setter-name
+      (let [res-sym (gensym "res")]
+         `(if (clojure.core/fn? ~val-sym)
+           (let [~res-sym (~val-sym ~getter-invoke)]
+             ~(gen-invoke setter-name target-sym res-sym))
+           ~(gen-invoke setter-name target-sym val-sym)))
+      (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
+        `(if (clojure.core/fn? ~val-sym)
+           (~val-sym ~getter-invoke)
+           (let [~res-sym ~getter-invoke]
+             (.Clear ~res-sym)
+             (clojure.core/doseq [x# ~val-sym] (.Add ~res-sym x#))))))))
+
+(defmethod pset-property-handler false [type prop-info target value]
+  (if (.CanWrite prop-info)
+    (if (fn? value)
+      (.SetValue prop-info target (value (.GetValue prop-info target nil)) nil)
+      (.SetValue prop-info target value nil))
+    (if (fn? value)
+      (value (.GetValue target nil))
+      (let [^ICollection coll (.GetValue target nil)]
+        (.Clear coll)
+        (doseq [x value] (.Add coll x))))))
 
 (defn- pset-event-closure [type event-info]
   (let [add-method (.GetAddMethod event-info)]
@@ -200,6 +244,10 @@
 
 (defn- pset-method-closure [type method-info]
   (fn [target value] (.Invoke method-info target (to-array value))))
+
+(defn- pset-method-expr [type method-info target-sym val-sym]
+  
+  )
 
 (defn- pset-compile-member-key [type key]
   (let [name (name key)]
@@ -213,6 +261,16 @@
                :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
             (throw (MissingMemberException. (str type) name))))))
 
+(defn- pset-handle-member-key [type key target val]
+  (let [name (name key)]
+        (let [members (.GetMember type name)]
+          (if-let [member (first members)]
+            (do
+              (cond
+               (instance? PropertyInfo member) (pset-property-handler type member target val)
+               :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
+            (throw (MissingMemberException. (str type) name))))))
+
 (defn- pset-compile-keyword [type kw]
   (cond 
    (= kw :*cur*) (fn [t v]
@@ -222,11 +280,20 @@
                      :default (throw (ArgumentException. (str "Don't know how to apply " v " to " t " in :*cur setter")))))
         :default (pset-compile-member-key type kw)))
 
+(defn- pset-handle-keyword [type kw target val]
+  (cond 
+        :default (pset-handle-member-key type kw target val)))
+
 (defn pset-compile-key [type key]
   (cond
    (keyword? key) (pset-compile-keyword type key)
    (instance? AttachedData key) (fn [t v] (attach key t v))
    (instance? DependencyProperty key) (throw (NotImplementedException.))
+   :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
+
+(defn pset-handle-key [type key target val]
+  (cond
+   (keyword? key) (pset-handle-keyword type key target val)
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
 
 (defn- caml-form? [x] (and (list? x) (keyword? (first x))))
@@ -245,8 +312,6 @@
        ((pset-compile-key type key) target val)))
     target))
 
-(defn- when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
-
 (defn- pset-compile* [type target setters]
   (if type
     (let [mutator-vals (for [[key val] (partition 2 setters)]
@@ -258,13 +323,56 @@
       `(let [~tsym (.GetType ~target)]
          ~@(for [[key val] key-vals] `((ClojureWpf.core/pset-compile-key ~tsym ~key) ~target ~val))))))
 
+(defn- pset-compile-setter [^Type type target-sym key val]
+  (let [val-sym (gensym "val")]
+    `(let [~val-sym ~(pset-compile-val val)]
+       ~(binding [*pset-early-binding* true]
+          (pset-handle-key type key target-sym val-sym)))))
+
+(defn- pset-compile-setters [^Type type target-sym setters]
+  (for [[key val] (partition 2 setters)]
+    (pset-compile-setter type target-sym key val)))
+
+(defn- pset-exec-setter [type-sym target-sym key value]
+  `(let [val# ~(ClojureWpf.core/pset-compile-val value)]
+     (ClojureWpf.core/pset-handle-key ~type-sym ~key ~target-sym val#)))
+
+(defn- pset-exec-setters [type-sym target-sym setters]
+  (for [[key val] (partition 2 setters)]
+    (pset-exec-setter type-sym target-sym key val)))
+
 (defn- pset-compile [type target setters]
   (let [tsym `ClojureWpf.core/*cur*]
     `(binding [ClojureWpf.core/*cur* ~target] ~(pset-compile* type tsym setters) ClojureWpf.core/*cur*)))
 
+(defn pset-compile-early [^Type type target setters]
+  (let [target-sym (with-meta (gensym "t") {:tag type})]
+    `(let [~target-sym ~target]
+       (binding [ClojureWpf.core/*cur* ~target-sym]
+         ~@(pset-compile-setters type target-sym setters)
+         ~target-sym))))
+
+(defn pset-compile-late [target setters]
+  (let [target-sym (gensym "t")
+        type-sym (gensym "type")]
+    `(let [~target-sym ~target
+           ~type-sym (.GetType ~target-sym)]
+       (binding [ClojureWpf.core/*cur* ~target-sym]
+         ~@(pset-exec-setters type-sym target-sym setters)
+         ~target-sym))))
+
+(defn- pset-compile2 [^Type type target setters]
+  (if type
+    (pset-compile-early type target setters)
+    (pset-compile-late target setters)))
+
 (defmacro pset!* [type target setters]
   (let [type (when-type? type)]
     (pset-compile type target setters)))
+
+(defmacro pset!*2 [type target setters]
+  (let [type (when-type? type)]
+    (pset-compile2 type target setters)))
 
 (defmacro pset! [& forms]
   (let [type-target? (first forms)
@@ -272,6 +380,13 @@
         target (if type (second forms) type-target?)
         setters (if type (nnext forms) (next forms))]
     (pset-compile type target setters)))
+
+(defmacro pset!2 [& forms]
+  (let [type-target? (first forms)
+        type (when-type? type-target?) 
+        target (if type (second forms) type-target?)
+        setters (if type (nnext forms) (next forms))]
+    (pset-compile2 type target setters)))
 
 (defmacro defattached [name & opts]
   (let [qname (str *ns* "/" (clojure.core/name name))]
@@ -384,3 +499,12 @@
     (at window
         :*cur* (command-binding System.Windows.Input.NavigationCommands/Refresh #'sandbox-refresh))
     sandbox))
+
+;; Sample Code
+
+;(defn t3 []  (pset!2 Window (Window.) :Title "Hi"))
+
+
+
+
+
