@@ -7,7 +7,7 @@
            [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler CanExecuteRoutedEventHandler]
            [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
            [System.ComponentModel PropertyDescriptor MemberDescriptor]
-           [System.Xaml XamlSchemaContext]
+           [System.Xaml XamlSchemaContext XamlType]
            [System.Collections ICollection]
            [System.IO File]))
 
@@ -210,7 +210,7 @@
 
 (defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
 
-(defmethod pset-property-handler true [type prop-info target-sym val-sym]
+(defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (let [getter-name (.Name (.GetGetMethod prop-info))
         getter-invoke (gen-invoke getter-name target-sym)
         setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))]
@@ -227,7 +227,10 @@
              (.Clear ~res-sym)
              (clojure.core/doseq [x# ~val-sym] (.Add ~res-sym x#))))))))
 
-(defmethod pset-property-handler false [type prop-info target value]
+(defmethod pset-property-handler true [^Type type ^PropertyInfo prop-info target-sym val-sym]
+  (pset-property-expr type prop-info target-sym val-sym))
+
+(defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
   (if (.CanWrite prop-info)
     (if (fn? value)
       (.SetValue prop-info target (value (.GetValue prop-info target nil)) nil)
@@ -261,7 +264,7 @@
                :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
             (throw (MissingMemberException. (str type) name))))))
 
-(defn- pset-handle-member-key [type key target val]
+(defn- pset-handle-member-key [^Type type key target val]
   (let [name (name key)]
         (let [members (.GetMember type name)]
           (if-let [member (first members)]
@@ -280,7 +283,7 @@
                      :default (throw (ArgumentException. (str "Don't know how to apply " v " to " t " in :*cur setter")))))
         :default (pset-compile-member-key type kw)))
 
-(defn- pset-handle-keyword [type kw target val]
+(defn- pset-handle-keyword [^Type type kw target val]
   (cond 
         :default (pset-handle-member-key type kw target val)))
 
@@ -291,7 +294,7 @@
    (instance? DependencyProperty key) (throw (NotImplementedException.))
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
 
-(defn pset-handle-key [type key target val]
+(defn pset-handle-key [^Type type key target val]
   (cond
    (keyword? key) (pset-handle-keyword type key target val)
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
@@ -416,7 +419,7 @@
                  (let [path (first form)
                        setters (rest form)]
                    (at-compile `(ClojureWpf.core/find-elem-warn ~tsym ~path) setters)))
-        pset-expr (pset-compile nil tsym target-attrs)]
+        pset-expr (pset-compile2 nil tsym target-attrs)]
     `(do (let [~tsym ~target] ~pset-expr
               ~@xforms))))
 
@@ -444,15 +447,18 @@
       (doseq [ch# ~children] (.Add existing# ch#))
       (.SetValue ~invoker ~elem ~children))))
 
-(defn caml-children-expr [xt type elem children]
+(defn caml-children-expr [^XamlType xt ^Type type elem-sym children]
   (when (and (sequential? children) (seq children))
     (let [children* (vec (for [ch children]
                            (if (caml-form? ch) (caml-compile ch) ch)))
           cp (.get_ContentProperty xt)
-          invoker (.get_Invoker cp)]
-      (if (= 1 (count children*))
-        (let [content (first children*)] `(.SetValue ~invoker ~elem ~content))
-                      (caml-children*-expr invoker elem children*)))))
+          member (.get_UnderlyingMember cp)]
+      (when (instance? PropertyInfo member)
+        (let [val-sym (gensym "val")
+              expr (pset-property-expr type member elem-sym val-sym)]
+          (if (.CanWrite member)
+            `(let [~val-sym (clojure.core/first ~children*)] ~expr)
+            `(let [~val-sym ~children*] ~expr)))))))
 
 (defn caml-compile [form]
   (let [nexpr (name (first form))
@@ -467,7 +473,7 @@
             more (rest form)
             attrs? (first more)
             pset-expr (when (vector? attrs?)
-                      (pset-compile type elem attrs?))
+                      (pset-compile2 type elem attrs?))
             forms (if pset-expr (conj forms pset-expr) forms)
             children (if pset-expr (rest more) more)
             children-expr (caml-children-expr xt type elem children)
