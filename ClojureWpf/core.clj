@@ -179,33 +179,6 @@
 
 (defn- when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
 
-(defmacro pset-closure [name type args & body]
-  (let [[t v] args
-        type (when-type? type)
-        t (with-meta t {:tag type})]
-    `(fn ~name [~t ~v] ~@body)))
-
-(defn- mutate-prop [target prop-info func]
-  (let [val (.GetValue prop-info target nil)
-        mutated (func val)]
-    (when (.CanWrite prop-info)
-      (.SetValue prop-info target mutated nil)
-      mutated)))
-
-(defn- set-prop-collection [target prop-info val]
-  (if-let [existing (.GetValue prop-info target nil)]
-    (if (instance? ICollection existing)
-      (do (.Clear existing)
-          (doseq [x val] (.Add existing x)))
-      (.SetValue prop-info target val nil))))
-
-(defn- pset-property-closure [type prop-info]
-  (let [dep-prop (find-dep-prop type (.Name prop-info))]
-    (fn pset-property-fn [target val]
-      (cond (fn? val) (mutate-prop target prop-info val)
-        (sequential? val) (set-prop-collection target prop-info val)
-        :default (.SetValue prop-info target val nil)))))
-
 (def ^:dynamic ^:private *pset-early-binding* false)
 
 (defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
@@ -236,33 +209,26 @@
       (.SetValue prop-info target (value (.GetValue prop-info target nil)) nil)
       (.SetValue prop-info target value nil))
     (if (fn? value)
-      (value (.GetValue target nil))
-      (let [^ICollection coll (.GetValue target nil)]
+      (value (.GetValue prop-info target nil))
+      (let [^ICollection coll (.GetValue prop-info target nil)]
         (.Clear coll)
         (doseq [x value] (.Add coll x))))))
 
-(defn- pset-event-closure [type event-info]
-  (let [add-method (.GetAddMethod event-info)]
-    (fn [target value] (event-dg-helper target add-method value))))
+(defmulti pset-event-handler (fn [type event-info target value] *pset-early-binding*))
 
-(defn- pset-method-closure [type method-info]
-  (fn [target value] (.Invoke method-info target (to-array value))))
+(defmethod pset-event-handler true [^Type type ^EventInfo event-info target-sym val-sym]
+  (throw (NotImplementedException.)))
 
-(defn- pset-method-expr [type method-info target-sym val-sym]
-  
-  )
+(defmethod pset-event-handler false [^Type type ^EventInfo event-info target value]
+  (event-dg-helper target (.GetAddMethod event-info) value))
 
-(defn- pset-compile-member-key [type key]
-  (let [name (name key)]
-        (let [members (.GetMember type name)]
-          (if-let [member (first members)]
-            (do
-              (cond
-               (instance? PropertyInfo member) (pset-property-closure type member)
-               (instance? EventInfo member) (pset-event-closure type member)
-               (instance? MethodInfo member) (pset-method-closure type member)
-               :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
-            (throw (MissingMemberException. (str type) name))))))
+(defmulti pset-method-handler (fn [type method-info target value] *pset-early-binding*))
+
+(defmethod pset-method-handler true [^Type type ^MethodInfo method-info target-sym val-sym]
+  (throw (NotImplementedException.)))
+
+(defmethod pset-method-handler false [^Type type ^MethodInfo method-info target value]
+  (.Invoke method-info target (to-array value)))
 
 (defn- pset-handle-member-key [^Type type key target val]
   (let [name (name key)]
@@ -271,32 +237,21 @@
             (do
               (cond
                (instance? PropertyInfo member) (pset-property-handler type member target val)
+               (instance? EventInfo member) (pset-event-handler type member target val)
+               (instance? MethodInfo member) (pset-method-handler type member target val)
                :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
             (throw (MissingMemberException. (str type) name))))))
 
-(defn- pset-compile-keyword [type kw]
-  (cond 
-   (= kw :*cur*) (fn [t v]
-                    (cond
-                     (fn? v) (v t) ; Invoke val on current target
-                     (instance? CommandBinding v) (.Add (.CommandBindings t) v)
-                     :default (throw (ArgumentException. (str "Don't know how to apply " v " to " t " in :*cur setter")))))
-        :default (pset-compile-member-key type kw)))
-
-(defn- pset-handle-keyword [^Type type kw target val]
-  (cond 
-        :default (pset-handle-member-key type kw target val)))
-
-(defn pset-compile-key [type key]
+(defn pset-handle-keyword [^Type type key target val]
   (cond
-   (keyword? key) (pset-compile-keyword type key)
-   (instance? AttachedData key) (fn [t v] (attach key t v))
-   (instance? DependencyProperty key) (throw (NotImplementedException.))
-   :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
+   ; (= :*cur* key) `(~val ~target)
+   :default (pset-handle-member-key type key target val)))
 
 (defn pset-handle-key [^Type type key target val]
   (cond
    (keyword? key) (pset-handle-keyword type key target val)
+   ;(instance? AttachedData key) `(ClojureWpf.core/attach ~key ~target ~val)
+   ;(instance? DependencyProperty key) (throw (NotImplementedException.))
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
 
 (defn- caml-form? [x] (and (list? x) (keyword? (first x))))
@@ -307,24 +262,6 @@
    (vector? val) (vec (for [x val]
                         (if (caml-form? x) (caml-compile x) x)))
    :default val))
-
-(defn- pset-compile-late [target setters]
-  (let [type (.GetType target)]
-    (binding [*cur* target]
-     (doseq [[key val] (partition 2 setters)]
-       ((pset-compile-key type key) target val)))
-    target))
-
-(defn- pset-compile* [type target setters]
-  (if type
-    (let [mutator-vals (for [[key val] (partition 2 setters)]
-                         [(pset-compile-key type key) (pset-compile-val val)])]
-[]      `(do ~@(for [[m v] mutator-vals] `(~m ~target ~v))))
-    (let [key-vals (for [[key val] (partition 2 setters)]
-                     [key (pset-compile-val val)])
-          tsym (gensym "type")]
-      `(let [~tsym (.GetType ~target)]
-         ~@(for [[key val] key-vals] `((ClojureWpf.core/pset-compile-key ~tsym ~key) ~target ~val))))))
 
 (defn- pset-compile-setter [^Type type target-sym key val]
   (let [val-sym (gensym "val")]
@@ -344,10 +281,6 @@
   (for [[key val] (partition 2 setters)]
     (pset-exec-setter type-sym target-sym key val)))
 
-(defn- pset-compile [type target setters]
-  (let [tsym `ClojureWpf.core/*cur*]
-    `(binding [ClojureWpf.core/*cur* ~target] ~(pset-compile* type tsym setters) ClojureWpf.core/*cur*)))
-
 (defn pset-compile-early [^Type type target setters]
   (let [target-sym (with-meta (gensym "t") {:tag type})]
     `(let [~target-sym ~target]
@@ -364,7 +297,7 @@
          ~@(pset-exec-setters type-sym target-sym setters)
          ~target-sym))))
 
-(defn- pset-compile2 [^Type type target setters]
+(defn- pset-compile [^Type type target setters]
   (if type
     (pset-compile-early type target setters)
     (pset-compile-late target setters)))
@@ -373,23 +306,12 @@
   (let [type (when-type? type)]
     (pset-compile type target setters)))
 
-(defmacro pset!*2 [type target setters]
-  (let [type (when-type? type)]
-    (pset-compile2 type target setters)))
-
 (defmacro pset! [& forms]
   (let [type-target? (first forms)
         type (when-type? type-target?) 
         target (if type (second forms) type-target?)
         setters (if type (nnext forms) (next forms))]
     (pset-compile type target setters)))
-
-(defmacro pset!2 [& forms]
-  (let [type-target? (first forms)
-        type (when-type? type-target?) 
-        target (if type (second forms) type-target?)
-        setters (if type (nnext forms) (next forms))]
-    (pset-compile2 type target setters)))
 
 (defmacro defattached [name & opts]
   (let [qname (str *ns* "/" (clojure.core/name name))]
@@ -419,7 +341,7 @@
                  (let [path (first form)
                        setters (rest form)]
                    (at-compile `(ClojureWpf.core/find-elem-warn ~tsym ~path) setters)))
-        pset-expr (pset-compile2 nil tsym target-attrs)]
+        pset-expr (pset-compile nil tsym target-attrs)]
     `(do (let [~tsym ~target] ~pset-expr
               ~@xforms))))
 
@@ -440,12 +362,6 @@
          (mapcat (fn [xt] [(.get_Name xt) xt])
                  (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
 
-
-(defn caml-children*-expr [invoker elem children]
-  `(let [existing# (.GetValue ~invoker ~elem)]
-    (if (and existing# (instance? System.Collections.ICollection existing#))
-      (doseq [ch# ~children] (.Add existing# ch#))
-      (.SetValue ~invoker ~elem ~children))))
 
 (defn caml-children-expr [^XamlType xt ^Type type elem-sym children]
   (when (and (sequential? children) (seq children))
@@ -473,7 +389,7 @@
             more (rest form)
             attrs? (first more)
             pset-expr (when (vector? attrs?)
-                      (pset-compile2 type elem attrs?))
+                      (pset-compile type elem attrs?))
             forms (if pset-expr (conj forms pset-expr) forms)
             children (if pset-expr (rest more) more)
             children-expr (caml-children-expr xt type elem children)
@@ -490,9 +406,9 @@
 
 (defn set-sandbox-refresh [sandbox func]
   (let [window (:window sandbox)]
-    (at window
-        dev-sandbox-refresh (fn [] (at window :Content (func)))
-        :*cur* (fn [wind] (.Execute System.Windows.Input.NavigationCommands/Refresh nil wind)))))
+    (doat window
+         (attach dev-sandbox-refresh window (fn [] (at window :Content (func))))
+         (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
 
 (defn- sandbox-refresh [s e] 
   (binding [*cur* s]
@@ -503,13 +419,13 @@
   (let [sandbox (apply separate-threaded-window options)
         window (:window sandbox)]
     (at window
-        :*cur* (command-binding System.Windows.Input.NavigationCommands/Refresh #'sandbox-refresh))
+        :CommandBindings (fn [bindings]
+                 (.Add bindings (command-binding System.Windows.Input.NavigationCommands/Refresh #'sandbox-refresh))))
     sandbox))
 
-;; Sample Code
+;; Test Code
 
 ;(defn t3 []  (pset!2 Window (Window.) :Title "Hi"))
-
 
 
 
