@@ -2,7 +2,7 @@
   (:import [System.Windows.Markup XamlReader]
            [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart EventWaitHandle EventResetMode]
            [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
-           [System.Windows Application Window EventManager DependencyProperty FrameworkPropertyMetadata LogicalTreeHelper]
+           [System.Windows Application Window EventManager DependencyObject DependencyProperty FrameworkPropertyMetadata LogicalTreeHelper]
            [System.Windows.Data BindingBase Binding BindingOperations]
            [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler CanExecuteRoutedEventHandler]
            [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
@@ -13,7 +13,7 @@
 
 (def ^:dynamic *cur* nil)
 
-(defn with-invoke* [dispatcher-obj func]
+(defn with-invoke* [^DispatcherObject dispatcher-obj func]
   (let [dispatcher (.get_Dispatcher dispatcher-obj)]
     (if (.CheckAccess dispatcher)
       (func)
@@ -23,7 +23,7 @@
 (defmacro with-invoke [dispatcher-obj & body]
   `(ClojureWpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
 
-(defn with-begin-invoke* [dispatcher-obj func]
+(defn with-begin-invoke* [^DispatcherObject dispatcher-obj func]
   (let [dispatcher (.get_Dispatcher dispatcher-obj)]
     (if (.CheckAccess dispatcher)
       (func)
@@ -121,7 +121,7 @@
   clojure.lang.IDeref
   (deref [this] (when *cur* (.GetValue *cur* prop)))
   IAttachedData
-  (attach [this target value] (.SetValue target prop value))
+  (attach [this target value] (with-invoke target (.SetValue target prop value)))
   clojure.lang.IFn
   (invoke [this target] (.GetValue target prop)))
 
