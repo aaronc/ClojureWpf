@@ -8,6 +8,7 @@
            [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
            [System.ComponentModel PropertyDescriptor MemberDescriptor]
            [System.Xaml XamlSchemaContext XamlType]
+           [System.Xaml.Schema XamlTypeName]
            [System.Collections ICollection]
            [System.IO File]))
 
@@ -217,7 +218,12 @@
 (defmulti pset-event-handler (fn [type event-info target value] *pset-early-binding*))
 
 (defmethod pset-event-handler true [^Type type ^EventInfo event-info target-sym val-sym]
-  (throw (NotImplementedException.)))
+  (let [event-type (.EventHandlerType event-info)
+        adder-name (.Name (.GetAddMethod event-info))
+        gen-dg `(clojure.core/gen-delegate ~event-type [s# e#]
+                                           (clojure.core/binding [ClojureWpf.core/*cur* ~target-sym]
+                                                                 (~val-sym s# e#)))]
+    (gen-invoke adder-name target-sym gen-dg)))
 
 (defmethod pset-event-handler false [^Type type ^EventInfo event-info target value]
   (event-dg-helper target (.GetAddMethod event-info) value))
@@ -357,16 +363,23 @@
     `(ClojureWpf.core/with-begin-invoke ~dispatcher-obj
        ~at-expr)))
 
+(defn xaml-ns
+  [ns-name asm-name]
+  {:asm (assembly-load asm-name) :ns (str "clr-namespace:" ns-name ";assembly=" asm-name)})
+
+(def default-xaml-ns {:ns "http://schemas.microsoft.com/winfx/2006/xaml/presentation"})
+(def default-xaml-ns-x {:ns "http://schemas.microsoft.com/winfx/2006/xaml"})
+
 (def xaml-map
   (apply assoc {}
          (mapcat (fn [xt] [(.get_Name xt) xt])
                  (.GetAllXamlTypes (XamlSchemaContext.) "http://schemas.microsoft.com/winfx/2006/xaml/presentation"))))
 
 
-(defn caml-children-expr [^XamlType xt ^Type type elem-sym children]
+(defn caml-children-expr [ns-ctxt ^XamlType xt ^Type type elem-sym children]
   (when (and (sequential? children) (seq children))
     (let [children* (vec (for [ch children]
-                           (if (caml-form? ch) (caml-compile ch) ch)))
+                           (if (caml-form? ch) (caml-compile ns-ctxt ch) ch)))
           cp (.get_ContentProperty xt)
           member (.get_UnderlyingMember cp)]
       (when (instance? PropertyInfo member)
@@ -376,30 +389,55 @@
             `(let [~val-sym (clojure.core/first ~children*)] ~expr)
             `(let [~val-sym ~children*] ~expr)))))))
 
-(defn caml-compile [form]
-  (let [nexpr (name (first form))
+(def default-xaml-context
+  {:context (XamlSchemaContext.)
+   :ns-map {nil default-xaml-ns :x default-xaml-ns-x}})
+
+(defn caml-compile [ns-ctxt form]
+  (let [ns-ctxt (or ns-ctxt default-xaml-context)
+        nexpr (name (first form))
+        nsidx (.IndexOf nexpr ":")
+        nsname (when (> nsidx 0) (.Substring nexpr 0 nsidx))
+        nsname (when nsname (get-in ns-ctxt [:ns-map (keyword nsname) :ns]))
+        nsname (or nsname (:ns default-xaml-ns))
+        nexpr (if (> nsidx 0) (.Substring nexpr nsidx) nexpr)
         enidx (.IndexOf nexpr "#")
         ename (when (> enidx 0) (.Substring nexpr (inc enidx)))
         tname (if ename (.Substring nexpr 0 enidx) nexpr)
-        xt (xaml-map tname)]
+        ctxt (:context ns-ctxt)
+        xaml-name (XamlTypeName. nsname tname)
+        xt (.GetXamlType ctxt xaml-name)]
     (when xt
       (let [type (.get_UnderlyingType xt)
-            elem (gensym "e")
-            forms (if ename [`(.set_Name ~elem ~ename)] [])
+            elem-sym (with-meta (gensym "e") {:tag type})
+            ctr-sym (symbol (str (.FullName type) "."))
+            forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
             more (rest form)
             attrs? (first more)
             pset-expr (when (vector? attrs?)
-                      (pset-compile type elem attrs?))
+                      (pset-compile type elem-sym attrs?))
             forms (if pset-expr (conj forms pset-expr) forms)
             children (if pset-expr (rest more) more)
-            children-expr (caml-children-expr xt type elem children)
+            children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
             forms (if children-expr (conj forms children-expr) forms)]
-        `(let [~elem (System.Activator/CreateInstance ~type)]
+        `(let [~elem-sym (~ctr-sym)]
            ~@forms
-           ~elem)))))
+           ~elem-sym)))))
 
-(defmacro caml [form]
-  (let [compiled (caml-compile form)]
+(defn make-xaml-context [ns-map]
+  (if ns-map
+    (let [ns-map (merge ns-map (:ns-map default-xaml-context))
+          asms (map #(:asm %) (filter #(contains? % :asm) (vals ns-map)))]
+      {:ns-map ns-map
+       :context (XamlSchemaContext. asms)})
+    default-xaml-context))
+
+(defmacro caml [& form]
+  (let [x (first form)
+        ns-map (when (map? x) x)
+        ns-ctxt (make-xaml-context ns-map)
+        form (if ns-map (rest form) form)
+        compiled (caml-compile ns-ctxt form)]
     `~compiled))
 
 (defattached dev-sandbox-refresh)
