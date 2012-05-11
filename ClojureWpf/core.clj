@@ -15,6 +15,10 @@
 
 (def ^:dynamic *cur* nil)
 
+(def default-xaml-ns {:ns "http://schemas.microsoft.com/winfx/2006/xaml/presentation"})
+
+(def default-xaml-ns-x {:ns "http://schemas.microsoft.com/winfx/2006/xaml"})
+
 (def default-xaml-context
   {:context (XamlSchemaContext.)
    :ns-map {nil default-xaml-ns :x default-xaml-ns-x}})
@@ -270,7 +274,7 @@
     ~target-sym ~val-sym))
 
 (defmethod pset-attached-prop-setter-handler false [^Type type ^MethodInfo method-info target value]
-  (.Invoke method-info nil (to-array [target value]))))
+  (.Invoke method-info nil (to-array [target value])))
 
 (defn pset-handle-attached-property [^Type type attached-type attached-prop target val]
   (if *xaml-schema-ctxt*
@@ -403,9 +407,6 @@
 (defn xaml-ns
   [ns-name asm-name]
   {:asm (assembly-load asm-name) :ns (str "clr-namespace:" ns-name ";assembly=" asm-name)})
-
-(def default-xaml-ns {:ns "http://schemas.microsoft.com/winfx/2006/xaml/presentation"})
-(def default-xaml-ns-x {:ns "http://schemas.microsoft.com/winfx/2006/xaml"})
 
 (def xaml-map
   (apply assoc {}
