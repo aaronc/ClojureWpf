@@ -10,9 +10,26 @@
            [System.Xaml XamlSchemaContext XamlType]
            [System.Xaml.Schema XamlTypeName]
            [System.Collections ICollection]
-           [System.IO File]))
+           [System.IO File])
+  (:require [clojure.string :as str]))
 
 (def ^:dynamic *cur* nil)
+
+(def default-xaml-context
+  {:context (XamlSchemaContext.)
+   :ns-map {nil default-xaml-ns :x default-xaml-ns-x}})
+
+(def ^:dynamic *xaml-schema-ctxt* default-xaml-context)
+
+(defn resolve-xaml-type [ns-ctxt nexpr]
+  (let [nparts (str/split nexpr #":")
+        tname (first nparts)
+        nsname (when (> (count nparts) 1) (second nparts))
+        nsname (when nsname (get-in ns-ctxt [:ns-map (keyword nsname) :ns]))
+        nsname (or nsname (:ns default-xaml-ns))
+        ctxt (:context ns-ctxt)
+        xaml-name (XamlTypeName. nsname tname)]
+        (.GetXamlType ctxt xaml-name)))
 
 (defn with-invoke* [^DispatcherObject dispatcher-obj func]
   (let [dispatcher (.get_Dispatcher dispatcher-obj)]
@@ -97,7 +114,6 @@
          (gen-delegate ThreadStart [] (.Run (Activator/CreateInstance application-class))))
     (.SetApartmentState ApartmentState/STA)
     (.Start)))
-
 
 (def ^:private xamlClassRegex #"x:Class=\"[\w\.]+\"")
 
@@ -236,22 +252,43 @@
 (defmethod pset-method-handler false [^Type type ^MethodInfo method-info target value]
   (.Invoke method-info target (to-array value)))
 
-(defn- pset-handle-member-key [^Type type key target val]
-  (let [name (name key)]
-        (let [members (.GetMember type name)]
-          (if-let [member (first members)]
-            (do
-              (cond
-               (instance? PropertyInfo member) (pset-property-handler type member target val)
-               (instance? EventInfo member) (pset-event-handler type member target val)
-               (instance? MethodInfo member) (pset-method-handler type member target val)
-               :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
-            (throw (MissingMemberException. (str type) name))))))
+(defn- pset-handle-member-key [^Type type name target val]
+  (let [members (.GetMember type name)]
+    (if-let [member (first members)]
+      (do
+        (cond
+         (instance? PropertyInfo member) (pset-property-handler type member target val)
+         (instance? EventInfo member) (pset-event-handler type member target val)
+         (instance? MethodInfo member) (pset-method-handler type member target val)
+         :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
+      (throw (MissingMemberException. (str type) name)))))
+
+(defmulti pset-attached-prop-setter-handler (fn [type method-info target value] *pset-early-binding*))
+
+(defmethod pset-attached-prop-setter-handler true [^Type type ^MethodInfo method-info target-sym val-sym]
+  `(~(symbol (str (.. method-info DeclaringType FullName) "/" (.Name method-info)))
+    ~target-sym ~val-sym))
+
+(defmethod pset-attached-prop-setter-handler false [^Type type ^MethodInfo method-info target value]
+  (.Invoke method-info nil (to-array [target value]))))
+
+(defn pset-handle-attached-property [^Type type attached-type attached-prop target val]
+  (if *xaml-schema-ctxt*
+    (if-let [xaml-type (resolve-xaml-type *xaml-schema-ctxt* attached-type)]
+      (if-let [member (.GetAttachableMember xaml-type attached-prop)]
+        (pset-attached-prop-setter-handler
+         type (.. member Invoker UnderlyingSetter) target val)
+        (throw (Exception. (str "Unable to find attached property " attached-prop " on type " attached-type))))
+      (throw (Exception. (str "Unable to find xaml type " attached-type))))
+    (throw (Exception. "No *xaml-schema-ctxt*"))))
 
 (defn pset-handle-keyword [^Type type key target val]
-  (cond
-   ; (= :*cur* key) `(~val ~target)
-   :default (pset-handle-member-key type key target val)))
+  (let [key (name key)
+        dot-parts (str/split key #"\.")]
+    (cond
+     (> (count dot-parts) 1) (pset-handle-attached-property type (first dot-parts) (second dot-parts) target val)
+   ;(= "*cur*" key) `(~val ~target)
+   :default (pset-handle-member-key type key target val))))
 
 (defn pset-handle-key [^Type type key target val]
   (cond
@@ -389,42 +426,32 @@
             `(let [~val-sym (clojure.core/first ~children*)] ~expr)
             `(let [~val-sym ~children*] ~expr)))))))
 
-(def default-xaml-context
-  {:context (XamlSchemaContext.)
-   :ns-map {nil default-xaml-ns :x default-xaml-ns-x}})
-
 (defn caml-compile
   ([form] (caml-compile nil form))
   ([ns-ctxt form]
-      (let [ns-ctxt (or ns-ctxt default-xaml-context)
-            nexpr (name (first form))
-            nsidx (.IndexOf nexpr ":")
-            nsname (when (> nsidx 0) (.Substring nexpr 0 nsidx))
-            nsname (when nsname (get-in ns-ctxt [:ns-map (keyword nsname) :ns]))
-            nsname (or nsname (:ns default-xaml-ns))
-            nexpr (if (> nsidx 0) (.Substring nexpr nsidx) nexpr)
-            enidx (.IndexOf nexpr "#")
-            ename (when (> enidx 0) (.Substring nexpr (inc enidx)))
-            tname (if ename (.Substring nexpr 0 enidx) nexpr)
-            ctxt (:context ns-ctxt)
-            xaml-name (XamlTypeName. nsname tname)
-            xt (.GetXamlType ctxt xaml-name)]
-        (when xt
-          (let [type (.get_UnderlyingType xt)
-                elem-sym (with-meta (gensym "e") {:tag type})
-                ctr-sym (symbol (str (.FullName type) "."))
-                forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
-                more (rest form)
-                attrs? (first more)
-                pset-expr (when (vector? attrs?)
-                            (pset-compile type elem-sym attrs?))
-                forms (if pset-expr (conj forms pset-expr) forms)
-                children (if pset-expr (rest more) more)
-                children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
-                forms (if children-expr (conj forms children-expr) forms)]
-            `(let [~elem-sym (~ctr-sym)]
-               ~@forms
-               ~elem-sym))))))
+     (let [ns-ctxt (or ns-ctxt default-xaml-context)]
+       (binding [*xaml-schema-ctxt* ns-ctxt]
+        (let [nexpr (name (first form))
+              enparts (str/split nexpr #"#")
+              nexpr (first enparts)
+              ename (when (> (count enparts) 1) (second enparts))
+              xt (resolve-xaml-type ns-ctxt nexpr)]
+          (when xt
+            (let [type (.get_UnderlyingType xt)
+                  elem-sym (with-meta (gensym "e") {:tag type})
+                  ctr-sym (symbol (str (.FullName type) "."))
+                  forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
+                  more (rest form)
+                  attrs? (first more)
+                  pset-expr (when (vector? attrs?)
+                              (pset-compile type elem-sym attrs?))
+                  forms (if pset-expr (conj forms pset-expr) forms)
+                  children (if pset-expr (rest more) more)
+                  children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
+                  forms (if children-expr (conj forms children-expr) forms)]
+              `(let [~elem-sym (~ctr-sym)]
+                 ~@forms
+                 ~elem-sym))))))))
 
 (defn make-xaml-context [ns-map]
   (if ns-map
