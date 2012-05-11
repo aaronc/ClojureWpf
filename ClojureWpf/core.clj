@@ -393,36 +393,38 @@
   {:context (XamlSchemaContext.)
    :ns-map {nil default-xaml-ns :x default-xaml-ns-x}})
 
-(defn caml-compile [ns-ctxt form]
-  (let [ns-ctxt (or ns-ctxt default-xaml-context)
-        nexpr (name (first form))
-        nsidx (.IndexOf nexpr ":")
-        nsname (when (> nsidx 0) (.Substring nexpr 0 nsidx))
-        nsname (when nsname (get-in ns-ctxt [:ns-map (keyword nsname) :ns]))
-        nsname (or nsname (:ns default-xaml-ns))
-        nexpr (if (> nsidx 0) (.Substring nexpr nsidx) nexpr)
-        enidx (.IndexOf nexpr "#")
-        ename (when (> enidx 0) (.Substring nexpr (inc enidx)))
-        tname (if ename (.Substring nexpr 0 enidx) nexpr)
-        ctxt (:context ns-ctxt)
-        xaml-name (XamlTypeName. nsname tname)
-        xt (.GetXamlType ctxt xaml-name)]
-    (when xt
-      (let [type (.get_UnderlyingType xt)
-            elem-sym (with-meta (gensym "e") {:tag type})
-            ctr-sym (symbol (str (.FullName type) "."))
-            forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
-            more (rest form)
-            attrs? (first more)
-            pset-expr (when (vector? attrs?)
-                      (pset-compile type elem-sym attrs?))
-            forms (if pset-expr (conj forms pset-expr) forms)
-            children (if pset-expr (rest more) more)
-            children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
-            forms (if children-expr (conj forms children-expr) forms)]
-        `(let [~elem-sym (~ctr-sym)]
-           ~@forms
-           ~elem-sym)))))
+(defn caml-compile
+  ([form] (caml-compile nil form))
+  ([ns-ctxt form]
+      (let [ns-ctxt (or ns-ctxt default-xaml-context)
+            nexpr (name (first form))
+            nsidx (.IndexOf nexpr ":")
+            nsname (when (> nsidx 0) (.Substring nexpr 0 nsidx))
+            nsname (when nsname (get-in ns-ctxt [:ns-map (keyword nsname) :ns]))
+            nsname (or nsname (:ns default-xaml-ns))
+            nexpr (if (> nsidx 0) (.Substring nexpr nsidx) nexpr)
+            enidx (.IndexOf nexpr "#")
+            ename (when (> enidx 0) (.Substring nexpr (inc enidx)))
+            tname (if ename (.Substring nexpr 0 enidx) nexpr)
+            ctxt (:context ns-ctxt)
+            xaml-name (XamlTypeName. nsname tname)
+            xt (.GetXamlType ctxt xaml-name)]
+        (when xt
+          (let [type (.get_UnderlyingType xt)
+                elem-sym (with-meta (gensym "e") {:tag type})
+                ctr-sym (symbol (str (.FullName type) "."))
+                forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
+                more (rest form)
+                attrs? (first more)
+                pset-expr (when (vector? attrs?)
+                            (pset-compile type elem-sym attrs?))
+                forms (if pset-expr (conj forms pset-expr) forms)
+                children (if pset-expr (rest more) more)
+                children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
+                forms (if children-expr (conj forms children-expr) forms)]
+            `(let [~elem-sym (~ctr-sym)]
+               ~@forms
+               ~elem-sym))))))
 
 (defn make-xaml-context [ns-map]
   (if ns-map
