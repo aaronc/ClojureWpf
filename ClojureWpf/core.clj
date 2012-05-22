@@ -6,7 +6,7 @@
            [System.Windows.Data BindingBase Binding BindingOperations]
            [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler CanExecuteRoutedEventHandler]
            [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
-           [System.ComponentModel PropertyDescriptor MemberDescriptor]
+           [System.ComponentModel PropertyDescriptor MemberDescriptor TypeConverterAttribute]
            [System.Xaml XamlSchemaContext XamlType]
            [System.Xaml.Schema XamlTypeName]
            [System.Collections ICollection]
@@ -98,7 +98,6 @@
     (.SetApartmentState ApartmentState/STA)
     (.Start)))
 
-
 (def ^:private xamlClassRegex #"x:Class=\"[\w\.]+\"")
 
 (defn- load-dev-xaml [path]
@@ -184,16 +183,27 @@
 
 (defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
 
+(defn get-type-converter [^Type type]
+  (when-let [tc-attr (first (.GetCustomAttributes type TypeConverterAttribute true))]
+    (Type/GetType (.ConverterTypeName tc-attr))))
+
+(defn gen-type-conversion-expression [^Type type-converter val-sym]
+  (if-not type-converter
+    val-sym
+    `(let [tc# (new ~(symbol (.FullName type-converter)))]
+       (if (.IsValid tc# ~val-sym) (.ConvertFrom tc# ~val-sym) ~val-sym))))
+
 (defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (let [getter-name (.Name (.GetGetMethod prop-info))
         getter-invoke (gen-invoke getter-name target-sym)
-        setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))]
+        setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))
+        type-converter (get-type-converter (.PropertyType prop-info))]
     (if setter-name
       (let [res-sym (gensym "res")]
          `(if (clojure.core/fn? ~val-sym)
            (let [~res-sym (~val-sym ~getter-invoke)]
-             ~(gen-invoke setter-name target-sym res-sym))
-           ~(gen-invoke setter-name target-sym val-sym)))
+             ~(gen-invoke setter-name target-sym (gen-type-conversion-expression type-converter res-sym)))
+           ~(gen-invoke setter-name target-sym (gen-type-conversion-expression type-converter val-sym))))
       (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
         `(if (clojure.core/fn? ~val-sym)
            (~val-sym ~getter-invoke)
