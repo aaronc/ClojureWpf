@@ -204,27 +204,45 @@
 
 (defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
 
-(defn get-type-converter [^Type type]
-  (when-let [tc-attr (first (.GetCustomAttributes type TypeConverterAttribute true))]
-    (Type/GetType (.ConverterTypeName tc-attr))))
+(defn get-xaml-type [^Type type]
+  (when *xaml-schema-ctxt*
+    (.GetXamlType (:context *xaml-schema-ctxt*) type)))
 
-(defn gen-type-conversion-expression [^Type type-converter val-sym]
+(defn get-type-converter [^Type type]
+  (when-let [xaml-type (get-xaml-type type)]
+    (when-let [type-converter (.TypeConverter xaml-type)]
+      (.ConverterType type-converter))))
+
+(defn gen-type-converter-ctr [^Type type ^Type type-converter]
+  (let [cinfo (.GetConstructor type-converter Type/EmptyTypes)]
+    (if cinfo
+      `(new ~(symbol (.FullName type-converter)))
+      (let [tarray (make-array Type 1)]
+        (aset tarray 0 Type)
+        (if-let [cinfo (.GetConstructor type-converter tarray)]
+          `(new ~(symbol (.FullName type-converter)) ~type)
+          (throw (Exception. (str "Unable to find suitable constructor for " type-converter " for type " type))))))))
+
+(defn gen-type-conversion-expression [^Type type ^Type type-converter val-sym]
   (if-not type-converter
     val-sym
-    `(let [tc# (new ~(symbol (.FullName type-converter)))]
-       (if (.IsValid tc# ~val-sym) (.ConvertFrom tc# ~val-sym) ~val-sym))))
+    `(if (clojure.core/instance? ~type ~val-sym)
+      ~val-sym
+      (.ConvertFrom ~(gen-type-converter-ctr type type-converter) ~val-sym))))
 
 (defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (let [getter-name (.Name (.GetGetMethod prop-info))
         getter-invoke (gen-invoke getter-name target-sym)
         setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))
-        type-converter (get-type-converter (.PropertyType prop-info))]
+        ptype (.PropertyType prop-info)
+        type-converter (get-type-converter ptype)
+        xaml-type (get-xaml-type type)]
     (if setter-name
       (let [res-sym (gensym "res")]
          `(if (clojure.core/fn? ~val-sym)
            (let [~res-sym (~val-sym ~getter-invoke)]
-             ~(gen-invoke setter-name target-sym (gen-type-conversion-expression type-converter res-sym)))
-           ~(gen-invoke setter-name target-sym (gen-type-conversion-expression type-converter val-sym))))
+             ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
+           ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))))
       (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
         `(if (clojure.core/fn? ~val-sym)
            (~val-sym ~getter-invoke)
@@ -235,16 +253,28 @@
 (defmethod pset-property-handler true [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (pset-property-expr type prop-info target-sym val-sym))
 
+(defn convert-from [type type-converter value]
+  (if type-converter
+    (if (instance? type value)
+      value
+      (let [tc (Activator/CreateInstance type-converter)]
+        (.IsValid type-converter value)))
+    (cast type value)))
+
 (defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
-  (if (.CanWrite prop-info)
-    (if (fn? value)
-      (.SetValue prop-info target (value (.GetValue prop-info target nil)) nil)
-      (.SetValue prop-info target value nil))
-    (if (fn? value)
-      (value (.GetValue prop-info target nil))
-      (let [^ICollection coll (.GetValue prop-info target nil)]
-        (.Clear coll)
-        (doseq [x value] (.Add coll x))))))
+  (let [ptype (.PropertyType prop-info)
+        type-converter (get-type-converter ptype)]
+    (if (.CanWrite prop-info)
+      (let [res (if (fn? value)
+                  (value (.GetValue prop-info target nil))
+                  value)
+            res (convert-from ptype type-converter value)]
+        (.SetValue prop-info target res nil))
+      (if (fn? value)
+        (value (.GetValue prop-info target nil))
+        (let [^ICollection coll (.GetValue prop-info target nil)]
+          (.Clear coll)
+          (doseq [x value] (.Add coll x)))))))
 
 (defmulti pset-event-handler (fn [type event-info target value] *pset-early-binding*))
 
@@ -281,11 +311,15 @@
 (defmulti pset-attached-prop-setter-handler (fn [type method-info target value] *pset-early-binding*))
 
 (defmethod pset-attached-prop-setter-handler true [^Type type ^MethodInfo method-info target-sym val-sym]
-  `(~(symbol (str (.. method-info DeclaringType FullName) "/" (.Name method-info)))
-    ~target-sym ~val-sym))
+  (let [ptype (.ParameterType (second (.GetParameters method-info)))
+        type-converter (get-type-converter ptype)]
+    `(~(symbol (str (.. method-info DeclaringType FullName) "/" (.Name method-info)))
+      ~target-sym ~(gen-type-conversion-expression ptype type-converter val-sym))))
 
 (defmethod pset-attached-prop-setter-handler false [^Type type ^MethodInfo method-info target value]
-  (.Invoke method-info nil (to-array [target value])))
+ (let [ptype (.ParameterType (second (.GetParameters method-info)))
+       type-converter (get-type-converter ptype)]
+   (.Invoke method-info nil (to-array [target (convert-from ptype type-converter value)]))))
 
 (defn pset-handle-attached-property [^Type type attached-type attached-prop target val]
   (if *xaml-schema-ctxt*
@@ -430,7 +464,9 @@
     (let [children* (vec (for [ch children]
                            (if (caml-form? ch) (caml-compile ns-ctxt ch) ch)))
           cp (.get_ContentProperty xt)
-          member (.get_UnderlyingMember cp)]
+          member (.get_UnderlyingMember cp)
+          cp-xt (.Type cp)
+          is-collection (.IsCollection cp-xt)]
       (when (instance? PropertyInfo member)
         (let [val-sym (gensym "val")
               expr (pset-property-expr type member elem-sym val-sym)]
