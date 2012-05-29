@@ -420,9 +420,9 @@
   (let [was-key (atom false)]
     (split-with (fn [x]
                   (cond
-                   (not (list? x)) (do (reset! was-key true) true)
                    @was-key (do (reset! was-key false) true)
-                   :default false)) forms)))
+                   (list? x) false
+                   :default (do (reset! was-key true) true))) forms)))
 
 (declare at-compile)
 
