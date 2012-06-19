@@ -6,7 +6,7 @@
            [System.Windows.Data BindingBase Binding BindingOperations]
            [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler CanExecuteRoutedEventHandler]
            [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
-           [System.ComponentModel PropertyDescriptor MemberDescriptor TypeConverterAttribute]
+           [System.ComponentModel PropertyDescriptor MemberDescriptor TypeConverterAttribute TypeConverter]
            [System.Xaml XamlSchemaContext XamlType]
            [System.Xaml.Schema XamlTypeName]
            [System.Collections ICollection]
@@ -254,12 +254,14 @@
   (pset-property-expr type prop-info target-sym val-sym))
 
 (defn convert-from [type type-converter value]
-  (if type-converter
+  (when value (if type-converter
     (if (instance? type value)
       value
       (let [tc (Activator/CreateInstance type-converter)]
-        (.IsValid type-converter value)))
-    (cast type value)))
+        (when (instance? TypeConverter tc)
+              (when (.CanConvertFrom tc (type value))
+                (.ConvertFrom tc value)))))
+    (cast type value))))
 
 (defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
   (let [ptype (.PropertyType prop-info)
