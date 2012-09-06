@@ -189,7 +189,7 @@
   (get-static-field type (str (name key) "Event")))
 
 (defn bind [target key binding]
-  (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop target key))]
+  (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop (type target) key))]
     (BindingOperations/SetBinding target dep-prop binding)))
 
 (declare caml-compile)
@@ -230,6 +230,19 @@
       ~val-sym
       (.ConvertFrom ~(gen-type-converter-ctr type type-converter) ~val-sym))))
 
+(defn- gen-fn? [val-sym] `(clojure.core/fn? ~val-sym))
+
+(defn- gen-binding-instance? [val-sym]
+  `(instance? System.Windows.Data.BindingBase ~val-sym))
+
+(defn- gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym]
+  (if-let [prop-field (.GetField type (str (.Name prop-info) "Property") (enum-or BindingFlags/Static BindingFlags/Public))]
+    `(System.Windows.Data.BindingOperations/SetBinding
+     ~target-sym
+     ~(symbol (str (.FullName type) "/" (.Name prop-field)))
+     ~val-sym)
+    `(throw (Exception. (str "Cannot set data binding for property " ~(.Name prop-info) " on type " ~(.FullName type))))))
+
 (defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (let [getter-name (.Name (.GetGetMethod prop-info))
         getter-invoke (gen-invoke getter-name target-sym)
@@ -239,16 +252,25 @@
         xaml-type (get-xaml-type type)]
     (if setter-name
       (let [res-sym (gensym "res")]
-         `(if (clojure.core/fn? ~val-sym)
-           (let [~res-sym (~val-sym ~getter-invoke)]
-             ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
-           ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))))
+        `(cond
+          ~(gen-fn? val-sym)
+          (let [~res-sym (~val-sym ~getter-invoke)]
+            ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
+          ~(gen-binding-instance? val-sym)
+          ~(gen-data-binding type prop-info target-sym val-sym)
+          :default
+          ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))))
       (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
-        `(if (clojure.core/fn? ~val-sym)
-           (~val-sym ~getter-invoke)
-           (let [~res-sym ~getter-invoke]
-             (.Clear ~res-sym)
-             (clojure.core/doseq [x# ~val-sym] (.Add ~res-sym x#))))))))
+        `(cond
+          ~(gen-fn? val-sym)
+          (~val-sym ~getter-invoke)
+          ~(gen-binding-instance? val-sym)
+          ~(gen-data-binding type prop-info target-sym val-sym)
+          ~(gen-data-binding target-sym prop-info val-sym)
+          :default
+          (let [~res-sym ~getter-invoke]
+            (.Clear ~res-sym)
+            (clojure.core/doseq [x# ~val-sym] (.Add ~res-sym x#))))))))
 
 (defmethod pset-property-handler true [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (pset-property-expr type prop-info target-sym val-sym))
@@ -266,17 +288,19 @@
 (defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
   (let [ptype (.PropertyType prop-info)
         type-converter (get-type-converter ptype)]
-    (if (.CanWrite prop-info)
-      (let [res (if (fn? value)
-                  (value (.GetValue prop-info target nil))
-                  value)
-            res (convert-from ptype type-converter value)]
-        (.SetValue prop-info target res nil))
-      (if (fn? value)
-        (value (.GetValue prop-info target nil))
-        (let [^ICollection coll (.GetValue prop-info target nil)]
-          (.Clear coll)
-          (doseq [x value] (.Add coll x)))))))
+    (if (instance? BindingBase value)
+      (bind target (.Name prop-info) value)
+      (if (.CanWrite prop-info)
+        (let [res (if (fn? value)
+                    (value (.GetValue prop-info target nil))
+                    value)
+              res (convert-from ptype type-converter value)]
+          (.SetValue prop-info target res nil))
+        (if (fn? value)
+          (value (.GetValue prop-info target nil))
+          (let [^ICollection coll (.GetValue prop-info target nil)]
+            (.Clear coll)
+            (doseq [x value] (.Add coll x))))))))
 
 (defmulti pset-event-handler (fn [type event-info target value] *pset-early-binding*))
 
