@@ -15,25 +15,27 @@
 
 (def ^:dynamic *cur* nil)
 
-(def default-xaml-ns {:ns "http://schemas.microsoft.com/winfx/2006/xaml/presentation"})
+(def default-xaml-ns {:ns "http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                      :context (XamlReader/GetWpfSchemaContext)})
 
-(def default-xaml-ns-x {:ns "http://schemas.microsoft.com/winfx/2006/xaml"})
+(def default-xaml-ns-x {:ns "http://schemas.microsoft.com/winfx/2006/xaml"
+                        :context (XamlReader/GetWpfSchemaContext)})
 
 (def default-xaml-context
-  {:context (XamlSchemaContext.)
-   :ns-map {nil default-xaml-ns :x default-xaml-ns-x}})
+  {nil default-xaml-ns :x default-xaml-ns-x})
 
 (def ^:dynamic *xaml-schema-ctxt* default-xaml-context)
 
-(defn resolve-xaml-type [ns-ctxt nexpr]
+(defn resolve-xaml-type [xaml-ctxt nexpr]
   (let [nparts (str/split nexpr #":")
-        tname (first nparts)
-        nsname (when (> (count nparts) 1) (second nparts))
-        nsname (when nsname (get-in ns-ctxt [:ns-map (keyword nsname) :ns]))
-        nsname (or nsname (:ns default-xaml-ns))
+        is-split (> (count nparts) 1)
+        tname (if is-split (second nparts) (first nparts))
+        nsname (when is-split (first nparts))
+        ns-ctxt (get xaml-ctxt (keyword nsname))
+        nsname (:ns ns-ctxt)
         ctxt (:context ns-ctxt)
         xaml-name (XamlTypeName. nsname tname)]
-        (.GetXamlType ctxt xaml-name)))
+    (.GetXamlType ctxt xaml-name)))
 
 (defn with-invoke* [^DispatcherObject dispatcher-obj func]
   (let [dispatcher (.get_Dispatcher dispatcher-obj)]
@@ -205,8 +207,7 @@
 (defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
 
 (defn get-xaml-type [^Type type]
-  (when *xaml-schema-ctxt*
-    (.GetXamlType (:context *xaml-schema-ctxt*) type)))
+  (.GetXamlType (XamlReader/GetWpfSchemaContext) type))
 
 (defn get-type-converter [^Type type]
   (when-let [xaml-type (get-xaml-type type)]
@@ -477,7 +478,10 @@
 
 (defn xaml-ns
   [ns-name asm-name]
-  {:asm (assembly-load asm-name) :ns (str "clr-namespace:" ns-name ";assembly=" asm-name)})
+  (if-let [asm (assembly-load asm-name)]
+    {:ns (str "clr-namespace:" ns-name ";assembly=" asm-name)
+     :context (XamlSchemaContext. [asm])}
+    (throw (Exception. ("Unable to load assembly " asm-name)))))
 
 (def xaml-map
   (apply assoc {}
@@ -527,18 +531,10 @@
                  ~@forms
                  ~elem-sym))))))))
 
-(defn make-xaml-context [ns-map]
-  (if ns-map
-    (let [ns-map (merge ns-map (:ns-map default-xaml-context))
-          asms (map #(:asm %) (filter #(contains? % :asm) (vals ns-map)))]
-      {:ns-map ns-map
-       :context (XamlSchemaContext. asms)})
-    default-xaml-context))
-
 (defmacro caml [& form]
   (let [x (first form)
-        ns-map (when (map? x) x)
-        ns-ctxt (make-xaml-context ns-map)
+        ns-map (when (map? x) (eval x))
+        ns-ctxt (merge *xaml-schema-ctxt* ns-map)
         form (if ns-map (rest form) form)
         compiled (caml-compile ns-ctxt form)]
     `~compiled))
