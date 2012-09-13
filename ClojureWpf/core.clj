@@ -96,18 +96,20 @@
     (.set_Handled args true)))
 
 (defn separate-threaded-window
-  [& {:keys [exception-handler]}]
-  (let [window (atom nil)
-        ex-handler (or exception-handler dispatcher-unhandled-exception)
+  [& {:as opts}]
+  (let [{:keys [exception-handler title show]} (merge {:title "Window"
+                                                  :show true
+                                                  :exception-handler dispatcher-unhandled-exception} opts)
+        window (atom nil)
         waitHandle (EventWaitHandle. false EventResetMode/AutoReset)
         thread (doto (Thread.
                    (gen-delegate ParameterizedThreadStart [window]
                                  (reset! window (Window.))
-                                 (.set_Title @window "Window")
-                                 (.Show @window)
+                                 (.set_Title @window title)
+                                 (when show (.Show @window))
                                  (.add_UnhandledException Dispatcher/CurrentDispatcher
                                                           (gen-delegate DispatcherUnhandledExceptionEventHandler [s e]
-                                                                        (ex-handler s e)))
+                                                                        (exception-handler s e)))
                                  (.Set waitHandle)
                                  (Dispatcher/Run)))
                (.SetApartmentState ApartmentState/STA)
