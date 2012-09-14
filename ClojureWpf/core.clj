@@ -26,7 +26,7 @@
 
 (def ^:dynamic *xaml-schema-ctxt* default-xaml-context)
 
-(defn- resolve-xaml-type [xaml-ctxt nexpr]
+(defn resolve-xaml-type [xaml-ctxt nexpr]
   (let [nparts (str/split nexpr #":")
         is-split (> (count nparts) 1)
         tname (if is-split (second nparts) (first nparts))
@@ -57,12 +57,12 @@
 (defmacro with-begin-invoke [dispatcher-obj & body]
   `(ClojureWpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
 
-(defn- find-elem [target path] (reduce #(LogicalTreeHelper/FindLogicalNode % (name %2)) target path))
+(defn find-elem [target path] (reduce #(LogicalTreeHelper/FindLogicalNode % (name %2)) target path))
 
-(defn- find-elem-warn [target path]
+(defn find-elem-warn [target path]
   (or (find-elem target path) (println "Unable to find " path " in " target)))
 
-(defn- compile-target-expr [target]
+(defn compile-target-expr [target]
   (let [path? (vector? target)
         target? (when path? (first target))
         implicit-target? (when path? (keyword? target?))
@@ -89,7 +89,7 @@
 
 (def *dispatcher-exception (atom nil))
 
-(defn- dispatcher-unhandled-exception [sender args]
+(defn dispatcher-unhandled-exception [sender args]
   (let [ex (.get_Exception args)]
     (reset! *dispatcher-exception ex)
     (println "Dispatcher Exception: " ex)
@@ -123,7 +123,7 @@
 
 (def ^:private xamlClassRegex #"x:Class=\"[\w\.]+\"")
 
-(defn- load-dev-xaml [path]
+(defn load-dev-xaml [path]
   (let [xaml (slurp path :econding "UTF8")
         xaml (.Replace xamlClassRegex xaml "")]
     (XamlReader/Parse xaml)))
@@ -153,9 +153,9 @@
   (print-method (:prop x) writer)
   (.Write writer ">"))
 
-(defn- create-attached-data [^DependencyProperty prop] (AttachedData. prop))
+(defn create-attached-data [^DependencyProperty prop] (AttachedData. prop))
 
-(defn- event-dg-helper [target evt-method-info handler]
+(defn event-dg-helper [target evt-method-info handler]
   (let [dg (if-not (instance? Delegate handler)
                  (gen-delegate (.ParameterType (aget (.GetParameters evt-method-info) 0))
                                [s e] (binding [*cur* target] (handler s e)))
@@ -163,7 +163,7 @@
         (.Invoke evt-method-info target (to-array [dg]))
         dg))
 
-(defn- event-helper [target event-key handler prefix]
+(defn event-helper [target event-key handler prefix]
   (let [mname (str prefix (name event-key))]
     (if-let [m (.GetMethod (.GetType target) mname)]
       (event-dg-helper target m handler)
@@ -182,17 +182,17 @@
   ([^ICommand command exec-fn]
      (command-binding command exec-fn nil)))
 
-(defn- get-static-field [type fname]
+(defn get-static-field [type fname]
   (when-let [f (.GetField type fname (enum-or BindingFlags/Static BindingFlags/Public))]
       (.GetValue f nil)))
 
-(defn- get-static-field-throw [type fname]
+(defn get-static-field-throw [type fname]
   (or (get-static-field type fname) (throw (System.MissingFieldException. (str type) fname))))
 
-(defn- find-dep-prop [type key]
+(defn find-dep-prop [type key]
   (get-static-field type (str (name key) "Property")))
 
-(defn- find-routed-event [type key]
+(defn find-routed-event [type key]
   (get-static-field type (str (name key) "Event")))
 
 (defn bind [target key binding]
@@ -201,25 +201,25 @@
 
 (declare caml-compile)
 
-(defn- gen-invoke [method-str sym & args]
+(defn gen-invoke [method-str sym & args]
   (let [method-sym (symbol (str "." method-str))]
     `(~method-sym ~sym ~@args)))
 
-(defn- when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
+(defn when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
 
 (def ^:dynamic ^:private *pset-early-binding* false)
 
 (defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
 
-(defn- get-xaml-type [^Type type]
+(defn get-xaml-type [^Type type]
   (.GetXamlType (XamlReader/GetWpfSchemaContext) type))
 
-(defn- get-type-converter [^Type type]
+(defn get-type-converter [^Type type]
   (when-let [xaml-type (get-xaml-type type)]
     (when-let [type-converter (.TypeConverter xaml-type)]
       (.ConverterType type-converter))))
 
-(defn- gen-type-converter-ctr [^Type type ^Type type-converter]
+(defn gen-type-converter-ctr [^Type type ^Type type-converter]
   (let [cinfo (.GetConstructor type-converter Type/EmptyTypes)]
     (if cinfo
       `(new ~(symbol (.FullName type-converter)))
@@ -229,19 +229,19 @@
           `(new ~(symbol (.FullName type-converter)) ~type)
           (throw (Exception. (str "Unable to find suitable constructor for " type-converter " for type " type))))))))
 
-(defn- gen-type-conversion-expression [^Type type ^Type type-converter val-sym]
+(defn gen-type-conversion-expression [^Type type ^Type type-converter val-sym]
   (if-not type-converter
     val-sym
     `(if (clojure.core/instance? ~type ~val-sym)
       ~val-sym
       (.ConvertFrom ~(gen-type-converter-ctr type type-converter) ~val-sym))))
 
-(defn- gen-fn? [val-sym] `(clojure.core/fn? ~val-sym))
+(defn gen-fn? [val-sym] `(clojure.core/fn? ~val-sym))
 
-(defn- gen-binding-instance? [val-sym]
+(defn gen-binding-instance? [val-sym]
   `(instance? System.Windows.Data.BindingBase ~val-sym))
 
-(defn- gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym]
+(defn gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (if-let [prop-field (.GetField type (str (.Name prop-info) "Property") (enum-or BindingFlags/Static BindingFlags/Public))]
     `(System.Windows.Data.BindingOperations/SetBinding
      ~target-sym
@@ -249,7 +249,7 @@
      ~val-sym)
     `(throw (Exception. (str "Cannot set data binding for property " ~(.Name prop-info) " on type " ~(.FullName type))))))
 
-(defn- pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
+(defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (let [getter-name (.Name (.GetGetMethod prop-info))
         getter-invoke (gen-invoke getter-name target-sym)
         setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))
@@ -281,7 +281,7 @@
 (defmethod pset-property-handler true [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (pset-property-expr type prop-info target-sym val-sym))
 
-(defn- convert-from [type type-converter value]
+(defn convert-from [type type-converter value]
   (when value (if type-converter
     (if (instance? type value)
       value
@@ -329,7 +329,7 @@
 (defmethod pset-method-handler false [^Type type ^MethodInfo method-info target value]
   (.Invoke method-info target (to-array value)))
 
-(defn- pset-handle-member-key [^Type type name target val]
+(defn pset-handle-member-key [^Type type name target val]
   (let [members (.GetMember type name)]
     (if-let [member (first members)]
       (do
@@ -353,7 +353,7 @@
        type-converter (get-type-converter ptype)]
    (.Invoke method-info nil (to-array [target (convert-from ptype type-converter value)]))))
 
-(defn- pset-handle-attached-property [^Type type attached-type attached-prop target val]
+(defn pset-handle-attached-property [^Type type attached-type attached-prop target val]
   (if *xaml-schema-ctxt*
     (if-let [xaml-type (resolve-xaml-type *xaml-schema-ctxt* attached-type)]
       (if-let [member (.GetAttachableMember xaml-type attached-prop)]
@@ -363,7 +363,7 @@
       (throw (Exception. (str "Unable to find xaml type " attached-type))))
     (throw (Exception. "No *xaml-schema-ctxt*"))))
 
-(defn- pset-handle-keyword [^Type type key target val]
+(defn pset-handle-keyword [^Type type key target val]
   (let [key (name key)
         dot-parts (str/split key #"\.")]
     (cond
@@ -371,48 +371,48 @@
    ;(= "*cur*" key) `(~val ~target)
    :default (pset-handle-member-key type key target val))))
 
-(defn- pset-handle-key [^Type type key target val]
+(defn pset-handle-key [^Type type key target val]
   (cond
    (keyword? key) (pset-handle-keyword type key target val)
    ;(instance? AttachedData key) `(ClojureWpf.core/attach ~key ~target ~val)
    ;(instance? DependencyProperty key) (throw (NotImplementedException.))
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
 
-(defn- caml-form? [x] (and (list? x) (keyword? (first x))))
+(defn caml-form? [x] (and (list? x) (keyword? (first x))))
 
-(defn- pset-compile-val [val]
+(defn pset-compile-val [val]
   (cond
    (caml-form? val) (caml-compile val)
    (vector? val) (vec (for [x val]
                         (if (caml-form? x) (caml-compile x) x)))
    :default val))
 
-(defn- pset-compile-setter [^Type type target-sym key val]
+(defn pset-compile-setter [^Type type target-sym key val]
   (let [val-sym (gensym "val")]
     `(let [~val-sym ~(pset-compile-val val)]
        ~(binding [*pset-early-binding* true]
           (pset-handle-key type key target-sym val-sym)))))
 
-(defn- pset-compile-setters [^Type type target-sym setters]
+(defn pset-compile-setters [^Type type target-sym setters]
   (for [[key val] (partition 2 setters)]
     (pset-compile-setter type target-sym key val)))
 
-(defn- pset-exec-setter [type-sym target-sym key value]
+(defn pset-exec-setter [type-sym target-sym key value]
   `(let [val# ~(ClojureWpf.core/pset-compile-val value)]
      (ClojureWpf.core/pset-handle-key ~type-sym ~key ~target-sym val#)))
 
-(defn- pset-exec-setters [type-sym target-sym setters]
+(defn pset-exec-setters [type-sym target-sym setters]
   (for [[key val] (partition 2 setters)]
     (pset-exec-setter type-sym target-sym key val)))
 
-(defn- pset-compile-early [^Type type target setters]
+(defn pset-compile-early [^Type type target setters]
   (let [target-sym (with-meta (gensym "t") {:tag type})]
     `(let [~target-sym ~target]
        (binding [ClojureWpf.core/*cur* ~target-sym]
          ~@(pset-compile-setters type target-sym setters)
          ~target-sym))))
 
-(defn- pset-compile-late [target setters]
+(defn pset-compile-late [target setters]
   (let [target-sym (gensym "t")
         type-sym (gensym "type")]
     `(let [~target-sym ~target
@@ -421,7 +421,7 @@
          ~@(pset-exec-setters type-sym target-sym setters)
          ~target-sym))))
 
-(defn- pset-compile [^Type type target setters]
+(defn pset-compile [^Type type target setters]
   (if type
     (pset-compile-early type target setters)
     (pset-compile-late target setters)))
@@ -448,7 +448,7 @@
 
 (defattached cur-view)
 
-(defn- split-attrs-forms [forms]
+(defn split-attrs-forms [forms]
   (let [was-key (atom false)]
     (split-with (fn [x]
                   (cond
@@ -456,7 +456,7 @@
                    (list? x) false
                    :default (do (reset! was-key true) true))) forms)))
 
-(defn- at-compile [target forms]
+(defn at-compile [target forms]
   (let [[target-attrs forms] (split-attrs-forms forms)
         tsym (gensym "t")
         xforms (for [form forms]
@@ -486,7 +486,7 @@
      :context (XamlSchemaContext. [asm])}
     (throw (Exception. ("Unable to load assembly " asm-name)))))
 
-(defn- caml-children-expr [ns-ctxt ^XamlType xt ^Type type elem-sym children]
+(defn caml-children-expr [ns-ctxt ^XamlType xt ^Type type elem-sym children]
   (when (and (sequential? children) (seq children))
     (let [children* (vec (for [ch children]
                            (if (caml-form? ch) (caml-compile ns-ctxt ch) ch)))
@@ -501,7 +501,7 @@
             `(let [~val-sym (clojure.core/first ~children*)] ~expr)
             `(let [~val-sym ~children*] ~expr)))))))
 
-(defn- caml-compile
+(defn caml-compile
   ([form] (caml-compile nil form))
   ([ns-ctxt form]
      (let [ns-ctxt (or ns-ctxt default-xaml-context)]
@@ -544,7 +544,7 @@
          (attach dev-sandbox-refresh window (fn [] (at window :Content (func))))
          (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
 
-(defn- sandbox-refresh [s e] 
+(defn sandbox-refresh [s e] 
   (binding [*cur* s]
     (when-let [on-refresh @dev-sandbox-refresh]
       (binding [*dev-mode* true] (on-refresh)))))
@@ -553,15 +553,13 @@
   (let [sandbox (apply separate-threaded-window options)
         window (:window sandbox)
         opts (apply hash-map options)
-        {:keys [refresh]} opts]
+        {:keys [refresh title]} opts]
     (at window
         :CommandBindings (fn [bindings]
                            (.Add bindings
                                  (command-binding
                                   System.Windows.Input.NavigationCommands/Refresh
                                   #'sandbox-refresh))))
+    (when title (at window :Title title))
     (when refresh (set-sandbox-refresh sandbox refresh))
     sandbox))
-
-
-
