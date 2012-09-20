@@ -33,14 +33,14 @@
         nsname (or nsname (:ns default-xaml-ns))
         ctxt (:context ns-ctxt)
         xaml-name (XamlTypeName. nsname tname)]
-        (.GetXamlType ctxt xaml-name)))
+    (.GetXamlType ctxt xaml-name)))
 
 (defn with-invoke* [^DispatcherObject dispatcher-obj func]
   (let [dispatcher (.get_Dispatcher dispatcher-obj)]
     (if (.CheckAccess dispatcher)
       (func)
-      (.Invoke dispatcher DispatcherPriority/Normal 
-                    (sys-func [Object] [] (func))))))
+      (.Invoke dispatcher DispatcherPriority/Normal
+               (sys-func [Object] [] (func))))))
 
 (defmacro with-invoke [dispatcher-obj & body]
   `(ClojureWpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
@@ -49,7 +49,7 @@
   (let [dispatcher (.get_Dispatcher dispatcher-obj)]
     (if (.CheckAccess dispatcher)
       (func)
-      (.BeginInvoke dispatcher DispatcherPriority/Normal 
+      (.BeginInvoke dispatcher DispatcherPriority/Normal
                     (sys-func [Object] [] (func))))))
 
 (defmacro with-begin-invoke [dispatcher-obj & body]
@@ -69,8 +69,8 @@
                          target)
         path-expr (when path? (if implicit-target? (vec target) (vec (rest target))))
         target (if path?
-          `(ClojureWpf.core/find-elem-warn ~dispatcher-obj ~path-expr)
-          target)]
+                 `(ClojureWpf.core/find-elem-warn ~dispatcher-obj ~path-expr)
+                 target)]
     [dispatcher-obj target]))
 
 (defmacro doat [target & body]
@@ -99,20 +99,20 @@
         ex-handler (or exception-handler dispatcher-unhandled-exception)
         waitHandle (EventWaitHandle. false EventResetMode/AutoReset)
         thread (doto (Thread.
-                   (gen-delegate ParameterizedThreadStart [window]
-                                 (reset! window (Window.))
-                                 (.set_Title @window "Window")
-                                 (.Show @window)
-                                 (.add_UnhandledException Dispatcher/CurrentDispatcher
-                                                          (gen-delegate DispatcherUnhandledExceptionEventHandler [s e]
-                                                                        (ex-handler s e)))
-                                 (.Set waitHandle)
-                                 (Dispatcher/Run)))
-               (.SetApartmentState ApartmentState/STA)
-               (.Start window))]
+                      (gen-delegate ParameterizedThreadStart [window]
+                                    (reset! window (Window.))
+                                    (.set_Title @window "Window")
+                                    (.Show @window)
+                                    (.add_UnhandledException Dispatcher/CurrentDispatcher
+                                                             (gen-delegate DispatcherUnhandledExceptionEventHandler [s e]
+                                                                           (ex-handler s e)))
+                                    (.Set waitHandle)
+                                    (Dispatcher/Run)))
+                 (.SetApartmentState ApartmentState/STA)
+                 (.Start window))]
     (.WaitOne waitHandle)
     {:thread thread :window @window}))
-    
+
 (defn app-start [application-class]
   (doto (Thread.
          (gen-delegate ThreadStart [] (.Run (Activator/CreateInstance application-class))))
@@ -127,12 +127,15 @@
     (XamlReader/Parse xaml)))
 
 (def ^:dynamic *dev-mode* false)
- 
+
 (defn xaml-view
+  ([constructor dev-xaml-path]
+     (xaml-view constructor identity dev-xaml-path))
   ([constructor
     mutator
     dev-xaml-path]
-     (fn [] (let [view (if (and *dev-mode* dev-xaml-path (File/Exists dev-xaml-path)) (load-dev-xaml dev-xaml-path) (constructor))]
+     (fn [] (let [view (if (and *dev-mode* dev-xaml-path (File/Exists dev-xaml-path))
+                        (load-dev-xaml dev-xaml-path) (constructor))]
              (mutator view)
              view))))
 
@@ -150,11 +153,11 @@
 
 (defn- event-dg-helper [target evt-method-info handler]
   (let [dg (if-not (instance? Delegate handler)
-                 (gen-delegate (.ParameterType (aget (.GetParameters evt-method-info) 0))
-                               [s e] (binding [*cur* target] (handler s e)))
-                 handler)]
-        (.Invoke evt-method-info target (to-array [dg]))
-        dg))
+             (gen-delegate (.ParameterType (aget (.GetParameters evt-method-info) 0))
+                           [s e] (binding [*cur* target] (handler s e)))
+             handler)]
+    (.Invoke evt-method-info target (to-array [dg]))
+    dg))
 
 (defn- event-helper [target event-key handler prefix]
   (let [mname (str prefix (name event-key))]
@@ -177,7 +180,7 @@
 
 (defn get-static-field [type fname]
   (when-let [f (.GetField type fname (enum-or BindingFlags/Static BindingFlags/Public))]
-      (.GetValue f nil)))
+    (.GetValue f nil)))
 
 (defn get-static-field-throw [type fname]
   (or (get-static-field type fname) (throw (System.MissingFieldException. (str type) fname))))
@@ -227,8 +230,8 @@
   (if-not type-converter
     val-sym
     `(if (clojure.core/instance? ~type ~val-sym)
-      ~val-sym
-      (.ConvertFrom ~(gen-type-converter-ctr type type-converter) ~val-sym))))
+       ~val-sym
+       (.ConvertFrom ~(gen-type-converter-ctr type type-converter) ~val-sym))))
 
 (defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (let [getter-name (.Name (.GetGetMethod prop-info))
@@ -239,7 +242,7 @@
         xaml-type (get-xaml-type type)]
     (if setter-name
       (let [res-sym (gensym "res")]
-         `(if (clojure.core/fn? ~val-sym)
+        `(if (clojure.core/fn? ~val-sym)
            (let [~res-sym (~val-sym ~getter-invoke)]
              ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
            ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))))
@@ -255,13 +258,13 @@
 
 (defn convert-from [type type-converter value]
   (when value (if type-converter
-    (if (instance? type value)
-      value
-      (let [tc (Activator/CreateInstance type-converter)]
-        (when (instance? TypeConverter tc)
-              (when (.CanConvertFrom tc (type value))
-                (.ConvertFrom tc value)))))
-    (cast type value))))
+                (if (instance? type value)
+                  value
+                  (let [tc (Activator/CreateInstance type-converter)]
+                    (when (instance? TypeConverter tc)
+                      (when (.CanConvertFrom tc (type value))
+                        (.ConvertFrom tc value)))))
+                (cast type value))))
 
 (defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
   (let [ptype (.PropertyType prop-info)
@@ -319,9 +322,9 @@
       ~target-sym ~(gen-type-conversion-expression ptype type-converter val-sym))))
 
 (defmethod pset-attached-prop-setter-handler false [^Type type ^MethodInfo method-info target value]
- (let [ptype (.ParameterType (second (.GetParameters method-info)))
-       type-converter (get-type-converter ptype)]
-   (.Invoke method-info nil (to-array [target (convert-from ptype type-converter value)]))))
+  (let [ptype (.ParameterType (second (.GetParameters method-info)))
+        type-converter (get-type-converter ptype)]
+    (.Invoke method-info nil (to-array [target (convert-from ptype type-converter value)]))))
 
 (defn pset-handle-attached-property [^Type type attached-type attached-prop target val]
   (if *xaml-schema-ctxt*
@@ -338,14 +341,14 @@
         dot-parts (str/split key #"\.")]
     (cond
      (> (count dot-parts) 1) (pset-handle-attached-property type (first dot-parts) (second dot-parts) target val)
-   ;(= "*cur*" key) `(~val ~target)
-   :default (pset-handle-member-key type key target val))))
+                                        ;(= "*cur*" key) `(~val ~target)
+     :default (pset-handle-member-key type key target val))))
 
 (defn pset-handle-key [^Type type key target val]
   (cond
    (keyword? key) (pset-handle-keyword type key target val)
-   ;(instance? AttachedData key) `(ClojureWpf.core/attach ~key ~target ~val)
-   ;(instance? DependencyProperty key) (throw (NotImplementedException.))
+                                        ;(instance? AttachedData key) `(ClojureWpf.core/attach ~key ~target ~val)
+                                        ;(instance? DependencyProperty key) (throw (NotImplementedException.))
    :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
 
 (defn- caml-form? [x] (and (list? x) (keyword? (first x))))
@@ -402,7 +405,7 @@
 
 (defmacro pset! [& forms]
   (let [type-target? (first forms)
-        type (when-type? type-target?) 
+        type (when-type? type-target?)
         target (if type (second forms) type-target?)
         setters (if type (nnext forms) (next forms))]
     (pset-compile type target setters)))
@@ -481,27 +484,27 @@
   ([ns-ctxt form]
      (let [ns-ctxt (or ns-ctxt default-xaml-context)]
        (binding [*xaml-schema-ctxt* ns-ctxt]
-        (let [nexpr (name (first form))
-              enparts (str/split nexpr #"#")
-              nexpr (first enparts)
-              ename (when (> (count enparts) 1) (second enparts))
-              xt (resolve-xaml-type ns-ctxt nexpr)]
-          (when xt
-            (let [type (.get_UnderlyingType xt)
-                  elem-sym (with-meta (gensym "e") {:tag type})
-                  ctr-sym (symbol (str (.FullName type) "."))
-                  forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
-                  more (rest form)
-                  attrs? (first more)
-                  pset-expr (when (vector? attrs?)
-                              (pset-compile type elem-sym attrs?))
-                  forms (if pset-expr (conj forms pset-expr) forms)
-                  children (if pset-expr (rest more) more)
-                  children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
-                  forms (if children-expr (conj forms children-expr) forms)]
-              `(let [~elem-sym (~ctr-sym)]
-                 ~@forms
-                 ~elem-sym))))))))
+         (let [nexpr (name (first form))
+               enparts (str/split nexpr #"#")
+               nexpr (first enparts)
+               ename (when (> (count enparts) 1) (second enparts))
+               xt (resolve-xaml-type ns-ctxt nexpr)]
+           (when xt
+             (let [type (.get_UnderlyingType xt)
+                   elem-sym (with-meta (gensym "e") {:tag type})
+                   ctr-sym (symbol (str (.FullName type) "."))
+                   forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
+                   more (rest form)
+                   attrs? (first more)
+                   pset-expr (when (vector? attrs?)
+                               (pset-compile type elem-sym attrs?))
+                   forms (if pset-expr (conj forms pset-expr) forms)
+                   children (if pset-expr (rest more) more)
+                   children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
+                   forms (if children-expr (conj forms children-expr) forms)]
+               `(let [~elem-sym (~ctr-sym)]
+                  ~@forms
+                  ~elem-sym))))))))
 
 (defn make-xaml-context [ns-map]
   (if ns-map
@@ -524,10 +527,10 @@
 (defn set-sandbox-refresh [sandbox func]
   (let [window (:window sandbox)]
     (doat window
-         (attach dev-sandbox-refresh window (fn [] (at window :Content (func))))
-         (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
+          (attach dev-sandbox-refresh window (fn [] (at window :Content (func))))
+          (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
 
-(defn- sandbox-refresh [s e] 
+(defn- sandbox-refresh [s e]
   (binding [*cur* s]
     (when-let [on-refresh @dev-sandbox-refresh]
       (binding [*dev-mode* true] (on-refresh)))))
@@ -537,13 +540,17 @@
         window (:window sandbox)]
     (at window
         :CommandBindings (fn [bindings]
-                 (.Add bindings (command-binding System.Windows.Input.NavigationCommands/Refresh #'sandbox-refresh))))
+                           (.Add bindings (command-binding System.Windows.Input.NavigationCommands/Refresh #'sandbox-refresh))))
     sandbox))
 
+(defn dev-init [refresh]
+  (def sand (dev-sandbox :exception-handler
+                         (fn [s e]
+                           (println (.Exception e))
+                           (.set_Handled e true))))
+  (def wind (:window sand))
+  (at wind :Height 768.0 :Width 1024.0)
+  (set-sandbox-refresh sand refresh))
+
 ;; Test Code
-
 ;(defn t3 []  (pset!2 Window (Window.) :Title "Hi"))
-
-
-
-
