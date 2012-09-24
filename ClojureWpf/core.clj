@@ -207,7 +207,7 @@
   (let [method-sym (symbol (str "." method-str))]
     `(~method-sym ~sym ~@args)))
 
-(defn when-type? [t] (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t)))
+(defn when-type? [t] (comment (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t))))
 
 (def ^:dynamic ^:private *pset-early-binding* false)
 
