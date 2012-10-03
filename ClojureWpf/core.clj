@@ -1,16 +1,21 @@
 (ns ClojureWpf.core
-  (:import [System.Windows.Markup XamlReader]
-           [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart EventWaitHandle EventResetMode]
-           [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority DispatcherUnhandledExceptionEventHandler]
-           [System.Windows Application Window EventManager DependencyObject DependencyProperty FrameworkPropertyMetadata LogicalTreeHelper]
-           [System.Windows.Data BindingBase Binding BindingOperations]
-           [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler CanExecuteRoutedEventHandler]
-           [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
-           [System.ComponentModel PropertyDescriptor MemberDescriptor TypeConverterAttribute TypeConverter]
-           [System.Xaml XamlSchemaContext XamlType]
-           [System.Xaml.Schema XamlTypeName]
-           [System.Collections ICollection]
-           [System.IO File])
+  (:import
+   [System.Windows.Markup XamlReader]
+   [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart
+    EventWaitHandle EventResetMode]
+   [System.Windows.Threading Dispatcher DispatcherObject DispatcherPriority
+    DispatcherUnhandledExceptionEventHandler]
+   [System.Windows Application Window EventManager DependencyObject DependencyProperty
+    FrameworkPropertyMetadata LogicalTreeHelper]
+   [System.Windows.Data BindingBase Binding BindingOperations]
+   [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler
+    CanExecuteRoutedEventHandler]
+   [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
+   [System.ComponentModel PropertyDescriptor MemberDescriptor TypeConverterAttribute TypeConverter]
+   [System.Xaml XamlSchemaContext XamlType]
+   [System.Xaml.Schema XamlTypeName]
+   [System.Collections ICollection]
+   [System.IO File])
   (:require [clojure.string :as str]))
 
 (def ^:dynamic *cur* nil)
@@ -267,17 +272,16 @@
           ~(gen-fn? val-sym)
           (let [~res-sym (~val-sym ~getter-invoke)]
             ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
-          ~(gen-binding-instance? val-sym)
-          ~(gen-data-binding type prop-info target-sym val-sym)
+          ;;~(gen-binding-instance? val-sym)
+          ;;~(gen-data-binding type prop-info target-sym val-sym)
           :default
           ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))))
       (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
         `(cond
           ~(gen-fn? val-sym)
           (~val-sym ~getter-invoke)
-          ~(gen-binding-instance? val-sym)
-          ~(gen-data-binding type prop-info target-sym val-sym)
-          ~(gen-data-binding target-sym prop-info val-sym)
+          ;;~(gen-binding-instance? val-sym)
+          ;;~(gen-data-binding type prop-info target-sym val-sym)
           :default
           (let [~res-sym ~getter-invoke]
             (.Clear ~res-sym)
