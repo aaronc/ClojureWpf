@@ -22,10 +22,10 @@
 (def ^:dynamic *cur* nil)
 
 (def ^:private default-xaml-ns {:ns "http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                          :context (XamlReader/GetWpfSchemaContext)})
+                                :context (XamlReader/GetWpfSchemaContext)})
 
 (def ^:private default-xaml-ns-x {:ns "http://schemas.microsoft.com/winfx/2006/xaml"
-                        :context (XamlReader/GetWpfSchemaContext)})
+                                  :context (XamlReader/GetWpfSchemaContext)})
 
 (def default-xaml-context
   {nil default-xaml-ns :x default-xaml-ns-x})
@@ -105,8 +105,8 @@
 (defn separate-threaded-window
   [& {:as opts}]
   (let [{:keys [exception-handler title show]} (merge {:title "Window"
-                                                  :show true
-                                                  :exception-handler dispatcher-unhandled-exception} opts)
+                                                       :show true
+                                                       :exception-handler dispatcher-unhandled-exception} opts)
         window (atom nil)
         waitHandle (EventWaitHandle. false EventResetMode/AutoReset)
         thread (doto (Thread.
@@ -116,8 +116,8 @@
                                     (.Show @window)
                                     (.add_UnhandledException Dispatcher/CurrentDispatcher
                                                              (gen-delegate DispatcherUnhandledExceptionEventHandler [s e]
-                                                                        (log/trace "trying to dispatch exception" s e)
-                                                                        (exception-handler s e)))
+                                                                           (log/trace "trying to dispatch exception" s e)
+                                                                           (exception-handler s e)))
                                     (.Set waitHandle)
                                     (Dispatcher/Run)))
                  (.SetApartmentState ApartmentState/STA)
@@ -147,19 +147,19 @@
     mutator
     dev-xaml-path]
      (fn [] (let [view (if (and *dev-mode* dev-xaml-path (File/Exists dev-xaml-path))
-                        (load-dev-xaml dev-xaml-path) (constructor))]
-             (mutator view)
-             view))))
+                         (load-dev-xaml dev-xaml-path) (constructor))]
+              (mutator view)
+              view))))
 
 (defprotocol IAttachedData (attach [this target value]))
 
 (defrecord ^:private AttachedData [^DependencyProperty prop]
-  IAttachedData
-  (attach [this target value] (with-invoke target (.SetValue target prop value)))
-  clojure.lang.IDeref
-  (deref [this] (when *cur* (.GetValue *cur* prop)))
-  clojure.lang.IFn
-  (invoke [this target] (.GetValue target prop)))
+           IAttachedData
+           (attach [this target value] (with-invoke target (.SetValue target prop value)))
+           clojure.lang.IDeref
+           (deref [this] (when *cur* (.GetValue *cur* prop)))
+           clojure.lang.IFn
+           (invoke [this target] (.GetValue target prop)))
 
 (defmethod print-method AttachedData [x writer]
   (.Write writer "#<AttachedData ")
@@ -251,16 +251,19 @@
 
 (defn gen-fn? [val-sym] `(clojure.core/fn? ~val-sym))
 
-(defn gen-binding-instance? [val-sym]
+(defn gen-binding-instance? [^PropertyInfo prop-info val-sym]
   `(instance? System.Windows.Data.BindingBase ~val-sym))
 
-(defn gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym]
-  (if-let [prop-field (.GetField type (str (.Name prop-info) "Property") (enum-or BindingFlags/Static BindingFlags/Public))]
-    `(System.Windows.Data.BindingOperations/SetBinding
-     ~target-sym
-     ~(symbol (str (.FullName type) "/" (.Name prop-field)))
-     ~val-sym)
-    `(throw (Exception. (str "Cannot set data binding for property " ~(.Name prop-info) " on type " ~(.FullName type))))))
+(defn gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym default-expr]
+  (if (= (.PropertyType prop-info) BindingBase)
+    default-expr
+    (if-let [prop-field (.GetField type (str (.Name prop-info) "Property") (enum-or BindingFlags/Static BindingFlags/Public))]
+      (let [dp-name (str (.FullName type) "/" (.Name prop-field))]
+        `(System.Windows.Data.BindingOperations/SetBinding
+          ~target-sym
+          ~(symbol dp-name)
+          ~val-sym))
+      `(throw (Exception. (str "Cannot set data binding for property " ~(.Name prop-info) " on type " ~(.FullName type)))))))
 
 (defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (let [getter-name (.Name (.GetGetMethod prop-info))
@@ -270,21 +273,24 @@
         type-converter (get-type-converter ptype)
         xaml-type (get-xaml-type type)]
     (if setter-name
-      (let [res-sym (gensym "res")]
+      (let [res-sym (gensym "res")
+            default-expr (gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))]
         `(cond
           ~(gen-fn? val-sym)
           (let [~res-sym (~val-sym ~getter-invoke)]
             ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
-          ;;~(gen-binding-instance? val-sym)
-          ;;~(gen-data-binding type prop-info target-sym val-sym)
+          ~(gen-binding-instance? val-sym)
+          ~(gen-data-binding type prop-info target-sym val-sym
+                             default-expr)
           :default
-          ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))))
+          ~default-expr))
       (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
         `(cond
           ~(gen-fn? val-sym)
           (~val-sym ~getter-invoke)
-          ;;~(gen-binding-instance? val-sym)
-          ;;~(gen-data-binding type prop-info target-sym val-sym)
+          ~(gen-binding-instance? val-sym)
+          ~(gen-data-binding type prop-info target-sym val-sym
+                             nil)
           :default
           (let [~res-sym ~getter-invoke]
             (.Clear ~res-sym)
@@ -556,7 +562,7 @@
           (attach dev-sandbox-refresh window (fn [] (at window :Content (func))))
           (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
 
-(defn sandbox-refresh [s e] 
+(defn sandbox-refresh [s e]
   (binding [*cur* s]
     (when-let [on-refresh @dev-sandbox-refresh]
       (binding [*dev-mode* true] (on-refresh)))))
