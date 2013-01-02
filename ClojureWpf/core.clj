@@ -251,7 +251,7 @@
 
 (defn gen-fn? [val-sym] `(clojure.core/fn? ~val-sym))
 
-(defn gen-binding-instance? [^PropertyInfo prop-info val-sym]
+(defn gen-binding-instance? [val-sym]
   `(instance? System.Windows.Data.BindingBase ~val-sym))
 
 (defn gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym default-expr]
