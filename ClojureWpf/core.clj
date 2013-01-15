@@ -8,7 +8,7 @@
    [System.Windows Application Window EventManager DependencyObject DependencyProperty
     FrameworkPropertyMetadata LogicalTreeHelper]
    [System.Windows.Data BindingBase Binding BindingOperations]
-   [System.Windows.Input ICommand CommandBinding ExecutedRoutedEventHandler
+   [System.Windows.Input CommandBinding ExecutedRoutedEventHandler
     CanExecuteRoutedEventHandler]
    [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
    [System.ComponentModel PropertyDescriptor MemberDescriptor TypeConverterAttribute TypeConverter]
@@ -187,12 +187,12 @@
 (defn -= [target event-key handler] (event-helper target event-key handler "remove_"))
 
 (defn command-binding
-  ([^ICommand command exec-fn can-exec-fn]
+  ([command exec-fn can-exec-fn]
      (CommandBinding. command
                       (gen-delegate ExecutedRoutedEventHandler [s e] (exec-fn s e))
                       (when can-exec-fn
                         (gen-delegate CanExecuteRoutedEventHandler [s e] (can-exec-fn s e)))))
-  ([^ICommand command exec-fn]
+  ([command exec-fn]
      (command-binding command exec-fn nil)))
 
 (defn get-static-field [type fname]
