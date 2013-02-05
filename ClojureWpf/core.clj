@@ -440,9 +440,10 @@
          ~target-sym))))
 
 (defn pset-compile [^Type type target setters]
-  (if type
-    (pset-compile-early type target setters)
-    (pset-compile-late target setters)))
+  (comment (if type
+             (pset-compile-early type target setters)
+             (pset-compile-late target setters)))
+  (pset-compile-late target setters))
 
 (defmacro ^:private pset!* [type target setters]
   (let [type (when-type? type)]
@@ -581,17 +582,6 @@
     (when title (at window :Title title))
     (when refresh (set-sandbox-refresh sandbox refresh))
     sandbox))
-
-(defn dev-init [refresh]
-  (comment (def sand (dev-sandbox :exception-handler
-                                  (fn [s e]
-                                    (log/error (.Exception e) "Unhandled dispatcher exception")
-                                    (println (.Exception e))
-                                    (.set_Handled e true)))))
-  (def sand (dev-sandbox))
-  (def wind (:window sand))
-  (at wind :Height 768.0 :Width 1024.0)
-  (set-sandbox-refresh sand refresh))
 
 (defn get-app-main-window []
   (when-let [app Application/Current]
