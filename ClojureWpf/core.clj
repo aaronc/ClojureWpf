@@ -299,15 +299,15 @@
 (defmethod pset-property-handler true [^Type type ^PropertyInfo prop-info target-sym val-sym]
   (pset-property-expr type prop-info target-sym val-sym))
 
-(defn convert-from [type type-converter value]
+(defn convert-from [cls-type type-converter value]
   (when value (if type-converter
-                (if (instance? type value)
+                (if (instance? cls-type value)
                   value
                   (let [tc (Activator/CreateInstance type-converter)]
                     (when (instance? TypeConverter tc)
                       (when (.CanConvertFrom tc (type value))
                         (.ConvertFrom tc value)))))
-                (cast type value))))
+                (cast cls-type value))))
 
 (defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
   (let [ptype (.PropertyType prop-info)
