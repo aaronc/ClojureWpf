@@ -220,9 +220,9 @@
 
 (defn when-type? [t] (comment (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t))))
 
-(def ^:dynamic ^:private *pset-early-binding* false)
+;; (def ^:dynamic ^:private *pset-early-binding* false)
 
-(defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
+;; (defmulti pset-property-handler (fn [type prop-info target value] *pset-early-binding*))
 
 (defn get-xaml-type [^Type type]
   (.GetXamlType (XamlReader/GetWpfSchemaContext) type))
@@ -232,72 +232,72 @@
     (when-let [type-converter (.TypeConverter xaml-type)]
       (.ConverterType type-converter))))
 
-(defn gen-type-converter-ctr [^Type type ^Type type-converter]
-  (let [cinfo (.GetConstructor type-converter Type/EmptyTypes)]
-    (if cinfo
-      `(new ~(symbol (.FullName type-converter)))
-      (let [tarray (make-array Type 1)]
-        (aset tarray 0 Type)
-        (if-let [cinfo (.GetConstructor type-converter tarray)]
-          `(new ~(symbol (.FullName type-converter)) ~type)
-          (throw (Exception. (str "Unable to find suitable constructor for " type-converter " for type " type))))))))
+;; (defn gen-type-converter-ctr [^Type type ^Type type-converter]
+;;   (let [cinfo (.GetConstructor type-converter Type/EmptyTypes)]
+;;     (if cinfo
+;;       `(new ~(symbol (.FullName type-converter)))
+;;       (let [tarray (make-array Type 1)]
+;;         (aset tarray 0 Type)
+;;         (if-let [cinfo (.GetConstructor type-converter tarray)]
+;;           `(new ~(symbol (.FullName type-converter)) ~type)
+;;           (throw (Exception. (str "Unable to find suitable constructor for " type-converter " for type " type))))))))
 
-(defn gen-type-conversion-expression [^Type type ^Type type-converter val-sym]
-  (if-not type-converter
-    val-sym
-    `(if (clojure.core/instance? ~type ~val-sym)
-       ~val-sym
-       (.ConvertFrom ~(gen-type-converter-ctr type type-converter) ~val-sym))))
+;; (defn gen-type-conversion-expression [^Type type ^Type type-converter val-sym]
+;;   (if-not type-converter
+;;     val-sym
+;;     `(if (clojure.core/instance? ~type ~val-sym)
+;;        ~val-sym
+;;        (.ConvertFrom ~(gen-type-converter-ctr type type-converter) ~val-sym))))
 
-(defn gen-fn? [val-sym] `(clojure.core/fn? ~val-sym))
+;; (defn gen-fn? [val-sym] `(clojure.core/fn? ~val-sym))
 
-(defn gen-binding-instance? [val-sym]
-  `(instance? System.Windows.Data.BindingBase ~val-sym))
+;; (defn gen-binding-instance? [val-sym]
+;;   `(instance? System.Windows.Data.BindingBase ~val-sym))
 
-(defn gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym default-expr]
-  (if (= (.PropertyType prop-info) BindingBase)
-    default-expr
-    (if-let [prop-field (.GetField type (str (.Name prop-info) "Property") (enum-or BindingFlags/Static BindingFlags/Public))]
-      (let [dp-name (str (.FullName type) "/" (.Name prop-field))]
-        `(System.Windows.Data.BindingOperations/SetBinding
-          ~target-sym
-          ~(symbol dp-name)
-          ~val-sym))
-      `(throw (Exception. (str "Cannot set data binding for property " ~(.Name prop-info) " on type " ~(.FullName type)))))))
+;; (defn gen-data-binding [^Type type ^PropertyInfo prop-info target-sym val-sym default-expr]
+;;   (if (= (.PropertyType prop-info) BindingBase)
+;;     default-expr
+;;     (if-let [prop-field (.GetField type (str (.Name prop-info) "Property") (enum-or BindingFlags/Static BindingFlags/Public))]
+;;       (let [dp-name (str (.FullName type) "/" (.Name prop-field))]
+;;         `(System.Windows.Data.BindingOperations/SetBinding
+;;           ~target-sym
+;;           ~(symbol dp-name)
+;;           ~val-sym))
+;;       `(throw (Exception. (str "Cannot set data binding for property " ~(.Name prop-info) " on type " ~(.FullName type)))))))
 
-(defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
-  (let [getter-name (.Name (.GetGetMethod prop-info))
-        getter-invoke (gen-invoke getter-name target-sym)
-        setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))
-        ptype (.PropertyType prop-info)
-        type-converter (get-type-converter ptype)
-        xaml-type (get-xaml-type type)]
-    (if setter-name
-      (let [res-sym (gensym "res")
-            default-expr (gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))]
-        `(cond
-          ~(gen-fn? val-sym)
-          (let [~res-sym (~val-sym ~getter-invoke)]
-            ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
-          ~(gen-binding-instance? val-sym)
-          ~(gen-data-binding type prop-info target-sym val-sym
-                             default-expr)
-          :default
-          ~default-expr))
-      (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
-        `(cond
-          ~(gen-fn? val-sym)
-          (~val-sym ~getter-invoke)
-          ~(gen-binding-instance? val-sym)
-          ~(gen-data-binding type prop-info target-sym val-sym
-                             nil)
-          :default
-          (let [~res-sym ~getter-invoke]
-            (.Clear ~res-sym)
-            (clojure.core/doseq [x# ~val-sym] (.Add ~res-sym x#))))))))
+;; (defn pset-property-expr [^Type type ^PropertyInfo prop-info target-sym val-sym]
+;;   (let [getter-name (.Name (.GetGetMethod prop-info))
+;;         getter-invoke (gen-invoke getter-name target-sym)
+;;         setter-name (when-let [setter (.GetSetMethod prop-info)] (.Name setter))
+;;         ptype (.PropertyType prop-info)
+;;         type-converter (get-type-converter ptype)
+;;         xaml-type (get-xaml-type type)]
+;;     (if setter-name
+;;       (let [res-sym (gensym "res")
+;;             default-expr (gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter val-sym))]
+;;         `(cond
+;;           ~(gen-fn? val-sym)
+;;           (let [~res-sym (~val-sym ~getter-invoke)]
+;;             ~(gen-invoke setter-name target-sym (gen-type-conversion-expression ptype type-converter res-sym)))
+;;           ~(gen-binding-instance? val-sym)
+;;           ~(gen-data-binding type prop-info target-sym val-sym
+;;                              default-expr)
+;;           :default
+;;           ~default-expr))
+;;       (let [res-sym (with-meta (gensym "res") {:tag ICollection})]
+;;         `(cond
+;;           ~(gen-fn? val-sym)
+;;           (~val-sym ~getter-invoke)
+;;           ~(gen-binding-instance? val-sym)
+;;           ~(gen-data-binding type prop-info target-sym val-sym
+;;                              nil)
+;;           :default
+;;           (let [~res-sym ~getter-invoke]
+;;             (.Clear ~res-sym)
+;;             (clojure.core/doseq [x# ~val-sym] (.Add ~res-sym x#))))))))
 
-(defmethod pset-property-handler true [^Type type ^PropertyInfo prop-info target-sym val-sym]
-  (pset-property-expr type prop-info target-sym val-sym))
+;; (defmethod pset-property-handler true [^Type type ^PropertyInfo prop-info target-sym val-sym]
+;;   (pset-property-expr type prop-info target-sym val-sym))
 
 (defn convert-from [cls-type type-converter value]
   (when value (if type-converter
@@ -309,7 +309,7 @@
                         (.ConvertFrom tc value)))))
                 (cast cls-type value))))
 
-(defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
+(defn pset-property-handler [^Type type ^PropertyInfo prop-info target value]
   (let [ptype (.PropertyType prop-info)
         type-converter (get-type-converter ptype)]
     (if (instance? BindingBase value)
@@ -326,25 +326,25 @@
             (.Clear coll)
             (doseq [x value] (.Add coll x))))))))
 
-(defmulti ^:private pset-event-handler (fn [type event-info target value] *pset-early-binding*))
+;; (defmulti ^:private pset-event-handler (fn [type event-info target value] *pset-early-binding*))
 
-(defmethod pset-event-handler true [^Type type ^EventInfo event-info target-sym val-sym]
-  (let [event-type (.EventHandlerType event-info)
-        adder-name (.Name (.GetAddMethod event-info))
-        gen-dg `(clojure.core/gen-delegate ~event-type [s# e#]
-                                           (clojure.core/binding [ClojureWpf.core/*cur* ~target-sym]
-                                                                 (~val-sym s# e#)))]
-    (gen-invoke adder-name target-sym gen-dg)))
+;; (defmethod pset-event-handler true [^Type type ^EventInfo event-info target-sym val-sym]
+;;   (let [event-type (.EventHandlerType event-info)
+;;         adder-name (.Name (.GetAddMethod event-info))
+;;         gen-dg `(clojure.core/gen-delegate ~event-type [s# e#]
+;;                                            (clojure.core/binding [ClojureWpf.core/*cur* ~target-sym]
+;;                                                                  (~val-sym s# e#)))]
+;;     (gen-invoke adder-name target-sym gen-dg)))
 
-(defmethod pset-event-handler false [^Type type ^EventInfo event-info target value]
+(defn pset-event-handler [^Type type ^EventInfo event-info target value]
   (event-dg-helper target (.GetAddMethod event-info) value))
 
-(defmulti ^:private pset-method-handler (fn [type method-info target value] *pset-early-binding*))
+;; (defmulti ^:private pset-method-handler (fn [type method-info target value] *pset-early-binding*))
 
-(defmethod pset-method-handler true [^Type type ^MethodInfo method-info target-sym val-sym]
-  (throw (NotImplementedException.)))
+;; (defmethod pset-method-handler true [^Type type ^MethodInfo method-info target-sym val-sym]
+;;   (throw (NotImplementedException.)))
 
-(defmethod pset-method-handler false [^Type type ^MethodInfo method-info target value]
+(defn pset-method-handler [^Type type ^MethodInfo method-info target value]
   (.Invoke method-info target (to-array value)))
 
 (defn pset-handle-member-key [^Type type name target val]
@@ -358,15 +358,15 @@
          :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
       (throw (MissingMemberException. (str type) name)))))
 
-(defmulti ^:private pset-attached-prop-setter-handler (fn [type method-info target value] *pset-early-binding*))
+;; (defmulti ^:private pset-attached-prop-setter-handler (fn [type method-info target value] *pset-early-binding*))
 
-(defmethod pset-attached-prop-setter-handler true [^Type type ^MethodInfo method-info target-sym val-sym]
-  (let [ptype (.ParameterType (second (.GetParameters method-info)))
-        type-converter (get-type-converter ptype)]
-    `(~(symbol (str (.. method-info DeclaringType FullName) "/" (.Name method-info)))
-      ~target-sym ~(gen-type-conversion-expression ptype type-converter val-sym))))
+;; (defmethod pset-attached-prop-setter-handler true [^Type type ^MethodInfo method-info target-sym val-sym]
+;;   (let [ptype (.ParameterType (second (.GetParameters method-info)))
+;;         type-converter (get-type-converter ptype)]
+;;     `(~(symbol (str (.. method-info DeclaringType FullName) "/" (.Name method-info)))
+;;       ~target-sym ~(gen-type-conversion-expression ptype type-converter val-sym))))
 
-(defmethod pset-attached-prop-setter-handler false [^Type type ^MethodInfo method-info target value]
+(defn pset-attached-prop-setter-handler [^Type type ^MethodInfo method-info target value]
   (let [ptype (.ParameterType (second (.GetParameters method-info)))
         type-converter (get-type-converter ptype)]
     (.Invoke method-info nil (to-array [target (convert-from ptype type-converter value)]))))
@@ -405,15 +405,15 @@
                         (if (caml-form? x) (caml-compile x) x)))
    :default val))
 
-(defn pset-compile-setter [^Type type target-sym key val]
-  (let [val-sym (gensym "val")]
-    `(let [~val-sym ~(pset-compile-val val)]
-       ~(binding [*pset-early-binding* true]
-          (pset-handle-key type key target-sym val-sym)))))
+;; (defn pset-compile-setter [^Type type target-sym key val]
+;;   (let [val-sym (gensym "val")]
+;;     `(let [~val-sym ~(pset-compile-val val)]
+;;        ~(binding [*pset-early-binding* true]
+;;           (pset-handle-key type key target-sym val-sym)))))
 
-(defn pset-compile-setters [^Type type target-sym setters]
-  (for [[key val] (partition 2 setters)]
-    (pset-compile-setter type target-sym key val)))
+;; (defn pset-compile-setters [^Type type target-sym setters]
+;;   (for [[key val] (partition 2 setters)]
+;;     (pset-compile-setter type target-sym key val)))
 
 (defn pset-exec-setter [type-sym target-sym key value]
   `(let [val# ~(ClojureWpf.core/pset-compile-val value)]
@@ -423,14 +423,21 @@
   (for [[key val] (partition 2 setters)]
     (pset-exec-setter type-sym target-sym key val)))
 
-(defn pset-compile-early [^Type type target setters]
-  (let [target-sym (with-meta (gensym "t") {:tag type})]
-    `(let [~target-sym ~target]
-       (binding [ClojureWpf.core/*cur* ~target-sym]
-         ~@(pset-compile-setters type target-sym setters)
-         ~target-sym))))
+(defn pset* [target setters]
+  (let [target-type (.GetType target)]
+    (binding [*cur* target]
+      (doseq [[k v] (partition 2 setters)]
+        (pset-handle-key target-type k target v))
+      target)))
 
-(defn pset-compile-late [target setters]
+;; (defn pset-compile-early [^Type type target setters]
+;;   (let [target-sym (with-meta (gensym "t") {:tag type})]
+;;     `(let [~target-sym ~target]
+;;        (binding [ClojureWpf.core/*cur* ~target-sym]
+;;          ~@(pset-compile-setters type target-sym setters)
+;;          ~target-sym))))
+
+(defn pset-compile [target setters]
   (let [target-sym (gensym "t")
         type-sym (gensym "type")]
     `(let [~target-sym ~target
@@ -439,22 +446,22 @@
          ~@(pset-exec-setters type-sym target-sym setters)
          ~target-sym))))
 
-(defn pset-compile [^Type type target setters]
-  (comment (if type
-             (pset-compile-early type target setters)
-             (pset-compile-late target setters)))
-  (pset-compile-late target setters))
+;; (defn pset-compile [^Type type target setters]
+;;   ;; (comment (if type
+;;   ;;            (pset-compile-early type target setters)
+;;   ;;            (pset-compile-late target setters)))
+;;   (pset-compile-late target setters))
 
-(defmacro ^:private pset!* [type target setters]
-  (let [type (when-type? type)]
-    (pset-compile type target setters)))
+;; (defmacro ^:private pset!* [type target setters]
+;;   (let [type (when-type? type)]
+;;     (pset-compile type target setters)))
 
 (defmacro pset! [& forms]
   (let [type-target? (first forms)
         type (when-type? type-target?)
         target (if type (second forms) type-target?)
         setters (if type (nnext forms) (next forms))]
-    (pset-compile type target setters)))
+    (pset-compile target setters)))
 
 (defmacro defattached [name & opts]
   (let [qname (str *ns* "/" (clojure.core/name name))]
@@ -482,7 +489,7 @@
                  (let [path (first form)
                        setters (rest form)]
                    (at-compile `(ClojureWpf.core/find-elem-warn ~tsym ~path) setters)))
-        pset-expr (pset-compile nil tsym target-attrs)]
+        pset-expr (pset-compile tsym target-attrs)]
     `(do (let [~tsym ~target] ~pset-expr
               ~@xforms))))
 
@@ -513,12 +520,15 @@
           member (.get_UnderlyingMember cp)
           cp-xt (.Type cp)
           is-collection (.IsCollection cp-xt)]
-      (when (instance? PropertyInfo member)
+      (if (instance? PropertyInfo member)
         (let [val-sym (gensym "val")
-              expr (pset-property-expr type member elem-sym val-sym)]
-          (if (.CanWrite member)
+              ;;expr (pset-property-expr type member elem-sym val-sym)
+              expr `(pset-handle-key ~type ~(.Name member) ~elem-sym ~val-sym)
+              ]
+          (if is-collection
             `(let [~val-sym (clojure.core/first ~children*)] ~expr)
-            `(let [~val-sym ~children*] ~expr)))))))
+            `(let [~val-sym ~children*] ~expr)))
+        (throw (ex-info (str "Unable to find conent property for" xt) {}))))))
 
 (defn caml-compile
   ([form] (caml-compile nil form))
@@ -530,7 +540,7 @@
                nexpr (first enparts)
                ename (when (> (count enparts) 1) (second enparts))
                xt (resolve-xaml-type ns-ctxt nexpr)]
-           (when xt
+           (if xt
              (let [type (.get_UnderlyingType xt)
                    elem-sym (with-meta (gensym "e") {:tag type})
                    ctr-sym (symbol (str (.FullName type) "."))
@@ -538,22 +548,61 @@
                    more (rest form)
                    attrs? (first more)
                    pset-expr (when (vector? attrs?)
-                               (pset-compile type elem-sym attrs?))
+                               (pset-compile elem-sym attrs?))
                    forms (if pset-expr (conj forms pset-expr) forms)
                    children (if pset-expr (rest more) more)
                    children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
-                   forms (if children-expr (conj forms children-expr) forms)]
+                   forms (if children-expr (conj forms children-expr) forms)
+                   ]
                `(let [~elem-sym (~ctr-sym)]
                   ~@forms
-                  ~elem-sym))))))))
+                  ~elem-sym))
+             (throw (ex-info (str "Unable to resolve Xaml type " nexpr) {}))))))))
+
+(declare caml*)
+
+(defn caml-children* [ns-ctxt ^XamlType xt ^Type type parent children]
+  (when (and (sequential? children) (seq children))
+    (let [children* (vec (for [ch children]
+                           (if (caml-form? ch) (caml* ns-ctxt ch) ch)))
+          cp (.get_ContentProperty xt)
+          member (.get_UnderlyingMember cp)
+          cp-xt (.Type cp)
+          is-collection (.IsCollection cp-xt)]
+      (if (instance? PropertyInfo member)
+        (pset-property-handler type member parent
+                               (if is-collection children* (first children*)))
+        (throw (ex-info (str "Unable to find conent property for" xt) {}))))))
+
+(defn caml*
+  ([ns-ctxt & form]
+     (let [ns-ctxt (or ns-ctxt default-xaml-context)]
+       (binding [*xaml-schema-ctxt* ns-ctxt]
+         (let [nexpr (name (first form))
+               enparts (str/split nexpr #"#")
+               nexpr (first enparts)
+               ename (when (> (count enparts) 1) (second enparts))
+               xt (resolve-xaml-type ns-ctxt nexpr)]
+           (if xt
+             (let [type (.get_UnderlyingType xt)
+                   inst (Activator/CreateInstance type)
+                   more (rest form)
+                   attrs? (first more)
+                   attrs (when (vector? attrs?) attrs?)
+                   children (if attrs (rest more) more)]
+               (when ename (set! (.Name inst) ename))
+               (pset* inst attrs)
+               (caml-children* ns-ctxt xt type inst children)
+               inst)
+             (throw (ex-info (str "Unable to resolve Xaml type " nexpr) {}))))))))
 
 (defmacro caml [& form]
   (let [x (first form)
         ns-map (when (map? x) (eval x))
         ns-ctxt (merge *xaml-schema-ctxt* ns-map)
-        form (if ns-map (rest form) form)
-        compiled (caml-compile ns-ctxt form)]
-    `~compiled))
+        form (if ns-map (rest form) form)]
+    `(let [ns-ctxt# (merge *xaml-schema-ctxt* ~ns-map)]
+       (caml* ns-ctxt# ~@form))))
 
 (defattached dev-sandbox-refresh)
 
@@ -583,6 +632,15 @@
     (when refresh (set-sandbox-refresh sandbox refresh))
     sandbox))
 
+(defn dev-init [refresh]
+  (def sand (dev-sandbox))
+  (def wind (:window sand))
+  (at wind :Height 768.0 :Width 1024.0)
+  (set-sandbox-refresh sand refresh))
+
 (defn get-app-main-window []
   (when-let [app Application/Current]
     (doat app (.MainWindow *cur*))))
+
+(defn resource-uri [assembly-name path]
+  (str "pack://application:,,,/" assembly-name ";component" path))
