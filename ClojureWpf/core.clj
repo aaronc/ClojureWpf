@@ -190,10 +190,16 @@
   ([command exec-fn can-exec-fn]
      (CommandBinding. command
                       (gen-delegate ExecutedRoutedEventHandler [s e] (exec-fn s e))
-                      (when can-exec-fn
-                        (gen-delegate CanExecuteRoutedEventHandler [s e] (can-exec-fn s e)))))
+                      (if can-exec-fn
+                        (gen-delegate CanExecuteRoutedEventHandler [s e] (can-exec-fn s e))
+                        (gen-delegate CanExecuteRoutedEventHandler [s e] (set! (.CanExecute e) true)))))
   ([command exec-fn]
      (command-binding command exec-fn nil)))
+
+(defn add-command-binding
+  [command-target & args]
+  (.Add (.CommandBindings command-target)
+        (apply command-binding args)))
 
 (defn get-static-field [type fname]
   (when-let [f (.GetField type fname (enum-or BindingFlags/Static BindingFlags/Public))]
@@ -581,6 +587,12 @@
     (when title (at window :Title title))
     (when refresh (set-sandbox-refresh sandbox refresh))
     sandbox))
+
+(defn dev-init [refresh]
+  (def sand (dev-sandbox))
+  (def wind (:window sand))
+  (at wind :Height 768.0 :Width 1024.0)
+  (set-sandbox-refresh sand refresh))
 
 (defn get-app-main-window []
   (when-let [app Application/Current]
