@@ -209,7 +209,7 @@
   (get-static-field type (str (name key) "Event")))
 
 (defn bind [target key binding]
-  (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop (type target) key))]
+  (when-let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop (type target) key))]
     (BindingOperations/SetBinding target dep-prop binding)))
 
 (declare caml-compile)
@@ -312,8 +312,7 @@
 (defmethod pset-property-handler false [^Type type ^PropertyInfo prop-info target value]
   (let [ptype (.PropertyType prop-info)
         type-converter (get-type-converter ptype)]
-    (if (instance? BindingBase value)
-      (bind target (.Name prop-info) value)
+    (when-not (and (instance? BindingBase value) (bind target (.Name prop-info) value))
       (if (.CanWrite prop-info)
         (let [res (if (fn? value)
                     (value (.GetValue prop-info target nil))
@@ -538,7 +537,7 @@
                    more (rest form)
                    attrs? (first more)
                    pset-expr (when (vector? attrs?)
-                               (pset-compile type elem-sym attrs?))
+                               (pset-compile nil elem-sym attrs?))
                    forms (if pset-expr (conj forms pset-expr) forms)
                    children (if pset-expr (rest more) more)
                    children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
