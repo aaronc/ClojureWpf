@@ -2,6 +2,7 @@
 
 The current API should be considered usable but unstable. There is
 no real documentation yet, but hopefully soon.
+
 **PLEASE use the stable branch for now.**
 
 Here is a short gist that will give you some idea of how the library
