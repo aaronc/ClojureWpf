@@ -22,7 +22,7 @@ me."))
 user=> (at myButton :Click #'click-fn)
 ```
 
-## Usage
+## Creating and Modifying WPF elements
 
 The design of ClojureWpf was influenced by some elements of both Hiccup and
 Enlive, so you may notice some similarities. It's syntax and features, however,
@@ -39,7 +39,9 @@ The ```*cur*``` var is used to access elements
 pointed to by ```target-path```'s (and also the current ```caml``` element) in
 the context of ```property-event-setter-pairs``` in ```at```, ```async-at```,
 and ```caml``` forms. It is also bound to the element pointed to by
-```target-path``` in ```doat``` and ```async-doat``` forms.
+```target-path``` in ```doat``` and ```async-doat``` forms, used by the
+```deref``` function of attached properties, and bound in event handlers bound
+using ```property-event-setter-pairs```.
 
 #### ```at``` macro
 ```(at target-path & property-event-setter-pairs & nested-at-forms)```
@@ -92,12 +94,53 @@ Dispatcher.Invoke under the hood. The syntax is identical to ```doat```
 otherwise.
 
 ### ```property-event-setter-pairs``` syntax for ```at```, ```async-at```, and ```caml```
-TODO
+
+A property/event setter pair consists of a property/event setter key and a value
+expression. property/event setter keys are usually Clojure keywords
+corresponding to the name of CLR property or event member.  You can also provide
+a keyword that corresponds to a WPF DependencyProperty defined on another
+DependencyObject (i.e. an attached property) with the syntax
+:OtherType.AttachedProperty.
+
+#### Handling of Property value expressions
+* If you pass a list beginning with a keyword that can be resolved to a XAML
+  type in the default xaml context, the list will be converted to a ```caml```
+  form.
+* If the value expression is of type BindingBase and can be bound to the target
+  object, a data binding on the specified property will be set.
+* If the property is writeable
+    - If you pass a value which is a Clojure function (i.e. satisifies fn?), the
+      current value of property will be passed to the function, and the property
+      will be set to the return value of the function
+    - Otherwise, the property will simply be set to the value that was passed to
+      it (after evaluation)
+* If the property is read-only
+    - If you pass a Clojure function (satisfies fn?), the value of the property
+      will be passed to the function (for modification say in the case of a
+      collection).
+    - If you pass a Clojure seq (satisfies seq?) and the property type satisfies
+      System.Collections.ICollection, the .Clear method will be called on the
+      current property value, and the elements of the seq will be added to the
+      collection using its .Add method.
+      
+***Examples:***
+```clojure
+(caml :TextBox [:Text (:Binding "MyTextProperty")])
+(at :ListBox [:Children ["abc" "def"]])
+```
+
+#### Handling of Event value expressions
+You can provide either a Clojure IFn or a CLR Delegate instance as a value for
+an event key.  If you pass a delegate, then it will simply be added as a handler
+for this event.  If you pass a Clojure IFn, it will be wrapped in the
+appropriate Delegate type for this event and the ```*cur*``` var will be bound
+to object that you are setting the event handler on (this way attached
+properties can be used from event handler fn's).
 
 ### ```target-path``` syntax for ```at```, ```doat```, ```async-at```, and ```async-doat```
 TODO
 
-### Helper Functions and Macros
+### Attaching user data to a WPF view
 
 #### ```defattached```
 ```(defattached MyAttachedPropertyName)```
@@ -126,6 +169,8 @@ user=> (doat [grid :myTextBox] @MyProperty)
 5
 ```
 
+### Using ClojureWPF for live WPF developement
+
 #### ```separate-threaded-window```
 Creates a WPF window a separate dispatcher thread that allows you to play with
 WPF code from the repl.
@@ -137,6 +182,34 @@ troublesome references to C# code-behind (i.e. the x:Class attribute is stripped
 from the root element). This allows you to load and reload XAML code from the
 disk while in development mode (possibly using some tool like Expression Blend
 to edit it) and then later compile it into a C# assembly.
+
+### FAQ
+
+1. Why does the ClojureWpf namespace use CamelCase?  Isn't that against Clojure
+naming conventions?
+
+Yes, it is. But, originally the only way we had of packaging the library into a
+DLL was to store as an embedded resource in a C# DLL. Also, we did and (still
+do) want to provide some C# helper clases that can be used for WPF data binding
+bundled into that DLL. ClojureWpf just seems like a more natural name for a C#
+namespace and .NET DLL than clj_wpf. We could change it, but it's probably not
+that important.
+
+2. Why isn't the caml syntax just like Hiccup?
+
+ClojureWpf uses the syntax ```(caml :TextBox [:Text "Hello"])``` as opposed to
+the Hiccup-style ```(caml [:TextBox {:Text "Hello"}])```. The reason for this is
+because there are some rare cases where either a) you need to use a
+property/event key twice in the same expression or b) you need to know in which
+order you're calling your property setters. You just can't do this with a
+Clojure map, but you can with a vector. Why would anyone ever need this you
+might ask. Well, I recall some early use case where I wanted to bind two
+handlers to a single event (something like
+```(caml :Button [:Click #'on-click :Click #'do-beep))```). Anyway, maybe it's
+not so common, but we decided to support it. Also I like the fact that actions
+specified by a vector happen in the order you write it rather than out of order 
+if you use a map. So there you go. It follows since we're using the vector for
+property/event setters, that lists need to be used for constructing elements.
 
 ## License
 
