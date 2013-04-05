@@ -79,12 +79,46 @@ also bind the value pointed to by target-path to the *cur* var.
 ```
 
 #### ````caml```` macro
-```(caml xaml-ns-map? element-type-keyword [& property-event-setter-pairs] & children)```
+```(caml xaml-ns-map? element-type-keyword [& property-event-setter-pairs]? & children)```
 
 The caml macro is the ClojureWpf analogue to XAML. It actually uses some of the
 XAML infrastructure under the hood to do its job.
 
-**TODO**
+```xaml-ns-map?``` is an optional map of namespace prefixes mapped to
+XamlSchemaContext's. Please use the ```xaml-ns``` function to construct
+XamlSchemaContext's. Ex: ```{:myViews (xaml-ns "MyViewsNamespace"
+"MyViewsAssembly")}```.  This is basically the equivalent of xmlns prefixes in
+XAML (see [MSDN](http://msdn.microsoft.com/en-us/library/ms747086.aspx).)  This
+allows us to specify WPF type names using this syntax: ```:myViews:MyView```.
+
+```element-type-keyword``` is the the name of the WPF element you want to
+construct. By default this will be resolved in the same default WPF namespaces
+that XAML uses.  i.e. ```(caml :TextBox)``` or ```(caml :Grid)```.  If you
+provide an optional first argument of ```xaml-ns-map?``` you can access types
+defined in other namespaces and assemblies. An optional hash argument to the end
+of the type name can be used to set the name property on the element (ex:
+```:TextBox#myTextBox```) - this is basically a shortcut for the XAML
+```x:Name``` attribute.
+
+See the docs for ```property-event-setter-pairs``` for the syntax for this
+optional ```caml``` element.  Note that these should be placed within a vector.
+
+```children``` can be a single child element for types taking a single child, or
+a list of elements for types that take a collection of children.  As in
+```property-event-setter-pairs``` expressions, forms that look like
+```(:MyElementTypeName ...)``` will be interpreted as ```caml``` forms if the
+keyword resolves to a type in the provided or implicit XAML namespace context.
+
+**Examples:**
+```clojure
+(caml :Grid
+  (:TextBox#myTextBox [:Text "Hello World"])
+  (:Button#myButton [:Click #'on-myButton-click] "Click Me"))
+
+(caml {:myNs (xaml-ns "MyNamespace" "MyAssembly")}
+ :myNs:MyUserControl)
+```
+
 
 #### ```async-at``` macro
 The asynchronous variant of ```at```. Uses Dispatcher.BeginInvoke instead of
