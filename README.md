@@ -1,7 +1,8 @@
 # WPF utilities for Clojure.
 
 **PLEASE use the stable branch for now.** The current API should be considered
-usable but unstable.
+usable but unstable.  It is possible that there will be slight changes to the
+syntax described below until this library reaches 1.0.
 
 Here is a short gist that will give you some idea of how the library can be
 used: https://gist.github.com/aaronc/fab70684cb52803a983f
