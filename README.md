@@ -205,8 +205,7 @@ to edit it) and then later compile it into a C# assembly.
 
 ### FAQ
 
-1. Why does the ClojureWpf namespace use CamelCase?  Isn't that against Clojure
-naming conventions?
+_Why does the ClojureWpf namespace use CamelCase?  Isn't that against Clojure naming conventions?_
 
 Yes, it is. But, originally the only way we had of packaging the library into a
 DLL was to store as an embedded resource in a C# DLL. Also, we did and (still
@@ -215,7 +214,7 @@ bundled into that DLL. ClojureWpf just seems like a more natural name for a C#
 namespace and .NET DLL than clj_wpf. We could change it, but it's probably not
 that important.
 
-2. Why isn't the caml syntax just like Hiccup?
+_Why isn't the caml syntax just like Hiccup?_
 
 ClojureWpf uses the syntax ```(caml :TextBox [:Text "Hello"])``` as opposed to
 the Hiccup-style ```(caml [:TextBox {:Text "Hello"}])```. The reason for this is
