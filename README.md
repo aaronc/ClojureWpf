@@ -71,7 +71,7 @@ form. The ```*cur*``` var is bound to the element pointed to by
 
 The doat macro executes the body forms on the dispatcher thread of the element
 resolved by target-path (this means that Dispatcher.Invoke has been called). It
-also bind the value pointed to by target-path to the *cur* var.
+also bind the value pointed to by target-path to the ```*cur*``` var.
 
 **Example:**
 ```clojure
@@ -135,8 +135,7 @@ A property/event setter pair consists of a property/event setter key and a value
 expression. property/event setter keys are usually Clojure keywords
 corresponding to the name of CLR property or event member.  You can also provide
 a keyword that corresponds to a WPF DependencyProperty defined on another
-DependencyObject (i.e. an attached property) with the syntax
-:OtherType.AttachedProperty.
+DependencyObject (i.e. an attached property) with the syntax ```:OtherType.AttachedProperty```.
 
 #### Handling of Property value expressions
 * If you pass a list beginning with a keyword that can be resolved to a XAML
@@ -145,16 +144,16 @@ DependencyObject (i.e. an attached property) with the syntax
 * If the value expression is of type BindingBase and can be bound to the target
   object, a data binding on the specified property will be set.
 * If the property is writeable
-    - If you pass a value which is a Clojure function (i.e. satisifies fn?), the
+    - If you pass a value which is a Clojure function (i.e. satisifies ```fn?```), the
       current value of property will be passed to the function, and the property
       will be set to the return value of the function
     - Otherwise, the property will simply be set to the value that was passed to
       it (after evaluation)
 * If the property is read-only
-    - If you pass a Clojure function (satisfies fn?), the value of the property
+    - If you pass a Clojure function (satisfies ```fn?```), the value of the property
       will be passed to the function (for modification say in the case of a
       collection).
-    - If you pass a Clojure seq (satisfies seq?) and the property type satisfies
+    - If you pass a Clojure seq (satisfies ```seq?```) and the property type satisfies
       System.Collections.ICollection, the .Clear method will be called on the
       current property value, and the elements of the seq will be added to the
       collection using its .Add method.
@@ -177,19 +176,22 @@ properties can be used from event handler fn's).
 
 ```target-path```'s make use of the WPF LogicalTreeHelper/FindLogicalNode method
 and are resolved as follows:
-* If you pass a vector, the first argument will be taken as the root element in
+* If ```target-path``` is a vector, the first argument will be taken as the root element in
   a path expression if it is not a keyword.  If it is a keyword, the root of the
   path expression will be whatever ```*cur*``` is bound to - if it is not bound
   an error will be thrown.  Each successive keyword in the vector will be taken
   as an argument to repeated applications to LogicalTreeHelper/FindLogicalNode.
   So if we pass ```[myElement :myGrid :myTextBox]```, the resulting target will
   be:
-  ```(LogicalTreeHelper/FindLogicalNode
-      (LogicalTreeHelper/FindLogicalNode myElement "myGrid")
-      "myTextBox")```
-* If you pass anything that is not a vector, this will be taken as target.
 
-Basically ```target-path``` is a convenient way of finding named child element
+```clojure
+(LogicalTreeHelper/FindLogicalNode
+  (LogicalTreeHelper/FindLogicalNode myElement "myGrid")
+  "myTextBox")
+```
+* If ```target-path``` is anything else, this will the target.
+
+Basically ```target-path``` is a convenient way of finding named child elements
 in a XAML tree.
 
 ### Attaching user data to a WPF view
@@ -237,8 +239,7 @@ to edit it) and then later compile it into a C# assembly.
 
 ### FAQ
 
-1. Why does the ClojureWpf namespace use CamelCase?  Isn't that against Clojure
-naming conventions?
+_Why does the ClojureWpf namespace use CamelCase?  Isn't that against Clojure naming conventions?_
 
 Yes, it is. But, originally the only way we had of packaging the library into a
 DLL was to store as an embedded resource in a C# DLL. Also, we did and (still
@@ -247,7 +248,7 @@ bundled into that DLL. ClojureWpf just seems like a more natural name for a C#
 namespace and .NET DLL than clj_wpf. We could change it, but it's probably not
 that important.
 
-2. Why isn't the caml syntax just like Hiccup?
+_Why isn't the caml syntax just like Hiccup?_
 
 ClojureWpf uses the syntax ```(caml :TextBox [:Text "Hello"])``` as opposed to
 the Hiccup-style ```(caml [:TextBox {:Text "Hello"}])```. The reason for this is
