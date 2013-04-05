@@ -63,7 +63,8 @@
 (defmacro with-begin-invoke [dispatcher-obj & body]
   `(ClojureWpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
 
-(defn find-elem [target path] (reduce #(LogicalTreeHelper/FindLogicalNode % (name %2)) target path))
+(defn find-elem [target path]
+  (reduce #(LogicalTreeHelper/FindLogicalNode % (name %2)) target path))
 
 (defn find-elem-warn [target path]
   (or (find-elem target path) (println "Unable to find " path " in " target)))

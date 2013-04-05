@@ -84,6 +84,8 @@ also bind the value pointed to by target-path to the *cur* var.
 The caml macro is the ClojureWpf analogue to XAML. It actually uses some of the
 XAML infrastructure under the hood to do its job.
 
+**TODO**
+
 #### ```async-at``` macro
 The asynchronous variant of ```at```. Uses Dispatcher.BeginInvoke instead of
 Dispatcher.Invoke under the hood. The syntax is identical to ```at``` otherwise.
@@ -138,7 +140,23 @@ to object that you are setting the event handler on (this way attached
 properties can be used from event handler fn's).
 
 ### ```target-path``` syntax for ```at```, ```doat```, ```async-at```, and ```async-doat```
-TODO
+
+```target-path```'s make use of the WPF LogicalTreeHelper/FindLogicalNode method
+and are resolved as follows:
+* If you pass a vector, the first argument will be taken as the root element in
+  a path expression if it is not a keyword.  If it is a keyword, the root of the
+  path expression will be whatever ```*cur*``` is bound to - if it is not bound
+  an error will be thrown.  Each successive keyword in the vector will be taken
+  as an argument to repeated applications to LogicalTreeHelper/FindLogicalNode.
+  So if we pass ```[myElement :myGrid :myTextBox]```, the resulting target will
+  be:
+  ```(LogicalTreeHelper/FindLogicalNode
+      (LogicalTreeHelper/FindLogicalNode myElement "myGrid")
+      "myTextBox")```
+* If you pass anything that is not a vector, this will be taken as target.
+
+Basically ```target-path``` is a convenient way of finding named child element
+in a XAML tree.
 
 ### Attaching user data to a WPF view
 
