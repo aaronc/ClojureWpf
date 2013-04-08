@@ -273,6 +273,8 @@
   ([clr-type property-event-setter-pairs]
      (pset-compile type (get-xaml-type type property-event-setter-pairs)))
   ([clr-type xaml-type property-event-setter-pairs]
+     (doseq [[k v] (partition 2 property-event-setter-pairs)]
+       (lookup-property-or-event clr-type (name k)))
      (pset-compile-late property-event-setter-pairs)))
 
 ;; (defn pset-compile-early
@@ -352,6 +354,7 @@
            (if xt
              (let [clr-type (.get_UnderlyingType xt)
                    elem-sym (with-meta (gensym "e") {:tag type})
+                   ctr (.GetConstructor clr-type Type/EmptyTypes)
                    ctr-sym (symbol (str (.FullName clr-type) "."))
                    forms (if element-name-part
                            [`(.set_Name ~elem-sym ~element-name-part)] [])
@@ -364,6 +367,10 @@
                    children (if pset-expr (rest more) more)
                    children-expr (when (seq children) (caml-children-expr xt clr-type elem-sym children))
                    forms (if children-expr (conj forms children-expr) forms)]
+               (when-not ctr
+                 (throw (ex-info (str "Unable to find default constructor for type " clr-type)
+                                 {:type ::caml-compile-exception
+                                  :clr-type clr-type})))
                `(let [~elem-sym (~ctr-sym)]
                   ~@forms
                   ~elem-sym))
