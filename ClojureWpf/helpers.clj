@@ -54,7 +54,7 @@
           (let [win (caml Window [Title title])]
             (deliver win-promise win)
             (when show (.Show win))))
-        thread (apply dispatcher-thread (merge {:init init-fn} opts))
+        thread (dispatcher-thread (merge {:init init-fn} opts))
         win @win-promise]
     (attach! dispatcher-thread-property win thread)
     win))
