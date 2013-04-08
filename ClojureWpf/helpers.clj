@@ -58,3 +58,57 @@
         win @win-promise]
     (attach! dispatcher-thread-property win thread)
     win))
+
+;;;; Command Binding Helper
+
+(defn command-binding
+  ([command exec-fn can-exec-fn]
+     (CommandBinding. command
+                      (gen-delegate ExecutedRoutedEventHandler [s e] (exec-fn s e))
+                      (if can-exec-fn
+                        (gen-delegate CanExecuteRoutedEventHandler [s e] (can-exec-fn s e))
+                        (gen-delegate CanExecuteRoutedEventHandler [s e] (set! (.CanExecute e) true)))))
+  ([command exec-fn]
+     (command-binding command exec-fn nil)))
+
+;;;; Helpers for working with XAML
+
+(def ^:private xamlClassRegex #"x:Class=\"[\w\.]+\"")
+
+(defn load-dev-xaml [path]
+  (let [xaml (slurp path :econding "UTF8")
+        xaml (.Replace xamlClassRegex xaml "")]
+    (XamlReader/Parse xaml)))
+
+(def ^:dynamic *dev-mode* false)
+
+(defn xaml-view
+  [constructor dev-xaml-path]
+  (if (and *dev-mode* dev-xaml-path (File/Exists dev-xaml-path))
+    (load-dev-xaml dev-xaml-path) (constructor)))
+
+;;;; Development Mode Helper
+
+(defn dev-sandbox [view-fn & options]
+  (let [win (apply separate-dispatcher-window options)]
+    (at win
+        CommandBindings
+        (fn [bindings]
+          (.Add bindings
+                (command-binding
+                 System.Windows.Input.NavigationCommands/Refresh
+                 (fn sandbox-refresh (at win Content (view-fn)))))))
+    win))
+
+;;;; Helpers for working with WPF Application classes
+
+(defn app-start [application-class]
+  (doto (Thread.
+         (gen-delegate ThreadStart [] (.Run (Activator/CreateInstance application-class))))
+    (.SetApartmentState ApartmentState/STA)
+    (.Start)))
+
+(defn get-app-main-window []
+  (when-let [app Application/Current]
+    (doat app (.MainWindow *cur*))))
+
