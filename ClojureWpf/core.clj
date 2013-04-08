@@ -10,16 +10,53 @@
    [System.Windows.Data BindingBase Binding BindingOperations]
    [System.Windows.Input CommandBinding ExecutedRoutedEventHandler
     CanExecuteRoutedEventHandler]
-   [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo]
+   [System.Reflection BindingFlags PropertyInfo MethodInfo EventInfo
+    MemberInfo ConstructorInfo MemberTypes]
    [System.ComponentModel PropertyDescriptor MemberDescriptor TypeConverterAttribute TypeConverter]
    [System.Xaml XamlSchemaContext XamlType]
    [System.Xaml.Schema XamlTypeName]
    [System.Collections ICollection]
-   [System.IO File])
-  (:require [clojure.string :as str]
-            [clojure.tools.logging :as log]))
+   [System.IO File]
+   [ClojureWpf ObservableMap ObservableVector
+    EvalReaderWrapper])
+  (:require [clojure.string :as str]))
 
 (def ^:dynamic *cur* nil)
+
+;;;; ## Macros for interacting with the WPF Dispatcher
+
+(defn with-invoke* [^DispatcherObject dispatcher-obj func]
+  (let [dispatcher (.get_Dispatcher dispatcher-obj)]
+    (if (.CheckAccess dispatcher)
+      (func)
+      (.Invoke dispatcher DispatcherPriority/Normal
+               (sys-func [Object] [] (func))))))
+
+(defmacro with-invoke [dispatcher-obj & body]
+  `(ClojureWpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
+
+(defmacro with-invoke? [dispatcher-obj? & body]
+  `(if (clojure.core/instance? DispatcherObject ~dispatcher-obj?)
+     (ClojureWpf.core/with-invoke ~dispatcher-obj? ~@body)
+     (do ~@body)))
+
+(defn with-begin-invoke* [^DispatcherObject dispatcher-obj func]
+  (let [dispatcher (.get_Dispatcher dispatcher-obj)]
+    (if (.CheckAccess dispatcher)
+      (func)
+      (.BeginInvoke dispatcher DispatcherPriority/Normal
+                    (sys-func [Object] [] (func))))))
+
+(defmacro with-begin-invoke [dispatcher-obj & body]
+  `(ClojureWpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
+
+(defmacro with-begin-invoke? [dispatcher-obj? & body]
+  `(if (clojure.core/instance? DispatcherObject ~dispatcher-obj?)
+     (ClojureWpf.core/with-begin-invoke ~dispatcher-obj? ~@body)
+     (do ~@body)))
+
+
+;;; ## Resolution of ```element-type-name```'s
 
 (def ^:private default-xaml-ns {:ns "http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                                 :context (XamlReader/GetWpfSchemaContext)})
@@ -32,204 +69,112 @@
 
 (def ^:dynamic *xaml-schema-ctxt* default-xaml-context)
 
-(defn resolve-xaml-type [xaml-ctxt nexpr]
-  (let [nparts (str/split nexpr #":")
-        is-split (> (count nparts) 1)
-        tname (if is-split (second nparts) (first nparts))
-        nsname (when is-split (first nparts))
-        ns-ctxt (get xaml-ctxt (keyword nsname))
-        nsname (:ns ns-ctxt)
-        ctxt (:context ns-ctxt)
-        xaml-name (XamlTypeName. nsname tname)]
-    (.GetXamlType ctxt xaml-name)))
+(defn- get-xaml-type
+  "Gets the corresponding XamlType for the given CLR type."
+  [clr-type]
+  (when clr-type
+    (.GetXamlType
+     (XamlReader/GetWpfSchemaContext)
+     clr-type)))
 
-(defn with-invoke* [^DispatcherObject dispatcher-obj func]
-  (let [dispatcher (.get_Dispatcher dispatcher-obj)]
-    (if (.CheckAccess dispatcher)
-      (func)
-      (.Invoke dispatcher DispatcherPriority/Normal
-               (sys-func [Object] [] (func))))))
+;; (defmethod print-dup XamlType [o w]
+;;   (.Write w "#=(ClojureWpf.core/get-xaml-type ")
+;;   (.Write w (pr-str (.UnderlyingType o)))
+;;   (.Write w ")"))
 
-(defmacro with-invoke [dispatcher-obj & body]
-  `(ClojureWpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
+(defn- resolve-element-type
+  "Resolves a symbol or a keyword to a XamlType in the specified xaml-ctxt or
+   the default-xaml-context.  The namespace part of the symbol or keyword can be
+   either correspond to a namespace prefix (as specificed in the xaml-ctxt map),
+   be left off (to use the default-xaml-context), or be the name of a namespace
+   in a loaded assembly (writing something like :System/String will work)."
+  ([element-type-name]
+     (resolve-element-type nil element-type-name))
+  ([xaml-ctxt element-type-name]
+     (when (instance? clojure.lang.Named element-type-name)
+       (let [xaml-ctxt (or xaml-ctxt *xaml-schema-ctxt* default-xaml-context) 
+             nsname (namespace element-type-name)
+             type-name (name element-type-name)
+             ns-ctxt (get xaml-ctxt (keyword nsname))
+             xaml-nsname (:ns ns-ctxt)
+             ctxt (:context ns-ctxt)
+             xaml-name (XamlTypeName. xaml-nsname type-name)]
+         (or
+          (when ctxt
+            (.GetXamlType ctxt xaml-name))
+          (when-let [resolved (resolve (symbol nsname type-name))]
+            (when (instance? Type resolved)
+              (get-xaml-type resolved))))))))
 
-(defn with-begin-invoke* [^DispatcherObject dispatcher-obj func]
-  (let [dispatcher (.get_Dispatcher dispatcher-obj)]
-    (if (.CheckAccess dispatcher)
-      (func)
-      (.BeginInvoke dispatcher DispatcherPriority/Normal
-                    (sys-func [Object] [] (func))))))
-
-(defmacro with-begin-invoke [dispatcher-obj & body]
-  `(ClojureWpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
+;;; ## Parsing of ```target-path``` expressions
 
 (defn find-elem [target path]
-  (reduce #(LogicalTreeHelper/FindLogicalNode % (name %2)) target path))
+  (reduce #(LogicalTreeHelper/FindLogicalNode % (name %2)) (or target *cur*) path))
 
-(defn find-elem-warn [target path]
-  (or (find-elem target path) (println "Unable to find " path " in " target)))
+(defn find-elem-throw [target path]
+  (or (find-elem target path)
+      (throw (ex-info "Unable to find " path " in " target
+                      {:type ::find-elem-exception
+                       :path path
+                       :target target}))))
 
-(defn compile-target-expr [target]
-  (let [path? (vector? target)
-        target? (when path? (first target))
-        implicit-target? (when path? (keyword? target?))
-        dispatcher-obj (if path?
-                         (if implicit-target? `ClojureWpf.core/*cur* target?)
-                         target)
-        path-expr (when path? (if implicit-target? (vec target) (vec (rest target))))
-        target (if path?
-                 `(ClojureWpf.core/find-elem-warn ~dispatcher-obj ~path-expr)
-                 target)]
-    [dispatcher-obj target]))
+(defn compile-target-path-expr [target-path-expr]
+  (if (vector? target-path-expr)
+    (let [target? (first target-path-expr)
+          target (if (keyword? target?) nil target?)
+          path-expr (vec (if target (rest target-path-expr) target-path-expr))
+          path-res-expr `(ClojureWpf.core/find-elem-throw ~target ~path-expr)]
+      [target path-res-expr])
+    [target-path-expr target-path-expr]))
 
-(defmacro doat [target & body]
-  (let [[dispatcher-obj target] (compile-target-expr target)]
-    `(ClojureWpf.core/with-invoke ~dispatcher-obj
+;;; ## ```doat``` and ```at``` macros
+
+(defmacro doat [target-path & body]
+  (let [[dispatcher-obj target] (compile-target-path-expr target-path)]
+    `(ClojureWpf.core/with-invoke? ~dispatcher-obj
        (clojure.core/binding [ClojureWpf.core/*cur* ~target]
                              ~@body))))
 
-(defmacro async-doat [target & body]
-  (let [[dispatcher-obj target] (compile-target-expr target)]
-    `(ClojureWpf.core/with-begin-invoke ~dispatcher-obj
+(defmacro async-doat [target-path & body]
+  (let [[dispatcher-obj target] (compile-target-path-expr target-path)]
+    `(ClojureWpf.core/with-begin-invoke? ~dispatcher-obj
        (clojure.core/binding [ClojureWpf.core/*cur* ~target]
                              ~@body))))
 
-(def *dispatcher-exception (atom nil))
+;;; ## Compilation of ```property-event-setter-pairs```
 
-(defn dispatcher-unhandled-exception [sender args]
-  (let [ex (.get_Exception args)]
-    (reset! *dispatcher-exception ex)
-    (println "Dispatcher Exception: " ex)
-    (log/error ex "Dispatcher Exception")
-    (.set_Handled args true)))
+;; This code is an obvious hack, but in the end was deemed the best solution to
+;; a difficult problem: that of returing a function Clojure as the result of a
+;; macro.  Basically there were three choices: 1) write a separate early binding
+;; and late binding version of the code (this was tried and was too problematic
+;; to maintain and caused bugs), 2) just have a late binding version (this loses
+;; many advantages of the early binding version in terms of performance and
+;; static XAML type checking), 3) find a work-around such as this.  For now, we
+;; are sticking with option 3 because, although it is somewhat of a hack, it
+;; provides the best set of features to the user with the least amount of
+;; headache in terms of maintainability.
 
-(defn separate-threaded-window
-  [& {:as opts}]
-  (let [{:keys [exception-handler title show]} (merge {:title "Window"
-                                                       :show true
-                                                       :exception-handler dispatcher-unhandled-exception} opts)
-        window (atom nil)
-        waitHandle (EventWaitHandle. false EventResetMode/AutoReset)
-        thread (doto (Thread.
-                      (gen-delegate ParameterizedThreadStart [window]
-                                    (reset! window (Window.))
-                                    (.set_Title @window "Window")
-                                    (.Show @window)
-                                    (.add_UnhandledException Dispatcher/CurrentDispatcher
-                                                             (gen-delegate DispatcherUnhandledExceptionEventHandler [s e]
-                                                                           (log/trace "trying to dispatch exception" s e)
-                                                                           (exception-handler s e)))
-                                    (.Set waitHandle)
-                                    (Dispatcher/Run)))
-                 (.SetApartmentState ApartmentState/STA)
-                 (.Start window))]
-    (.WaitOne waitHandle)
-    {:thread thread :window @window}))
+(defmethod print-dup EvalReaderWrapper [o w]
+  (.Write w (.Content o)))
 
-(defn app-start [application-class]
-  (doto (Thread.
-         (gen-delegate ThreadStart [] (.Run (Activator/CreateInstance application-class))))
-    (.SetApartmentState ApartmentState/STA)
-    (.Start)))
+(defn- eval-reader [str]
+  (doto (EvalReaderWrapper.) (.set_Content str)))
 
-(def ^:private xamlClassRegex #"x:Class=\"[\w\.]+\"")
-
-(defn load-dev-xaml [path]
-  (let [xaml (slurp path :econding "UTF8")
-        xaml (.Replace xamlClassRegex xaml "")]
-    (XamlReader/Parse xaml)))
-
-(def ^:dynamic *dev-mode* false)
-
-(defn xaml-view
-  ([constructor dev-xaml-path]
-     (xaml-view constructor identity dev-xaml-path))
-  ([constructor
-    mutator
-    dev-xaml-path]
-     (fn [] (let [view (if (and *dev-mode* dev-xaml-path (File/Exists dev-xaml-path))
-                         (load-dev-xaml dev-xaml-path) (constructor))]
-              (mutator view)
-              view))))
-
-(defprotocol IAttachedData (attach [this target value]))
-
-(defrecord ^:private AttachedData [^DependencyProperty prop]
-           IAttachedData
-           (attach [this target value] (with-invoke target (.SetValue target prop value)))
-           clojure.lang.IDeref
-           (deref [this] (when *cur* (.GetValue *cur* prop)))
-           clojure.lang.IFn
-           (invoke [this target] (.GetValue target prop)))
-
-(defmethod print-method AttachedData [x writer]
-  (.Write writer "#<AttachedData ")
-  (print-method (:prop x) writer)
-  (.Write writer ">"))
-
-(defn create-attached-data [^DependencyProperty prop] (AttachedData. prop))
-
-(defn event-dg-helper [target evt-method-info handler]
-  (let [dg (if-not (instance? Delegate handler)
-             (gen-delegate (.ParameterType (aget (.GetParameters evt-method-info) 0))
-                           [s e] (binding [*cur* target] (handler s e)))
-             handler)]
-    (.Invoke evt-method-info target (to-array [dg]))
-    dg))
-
-(defn event-helper [target event-key handler prefix]
-  (let [mname (str prefix (name event-key))]
-    (if-let [m (.GetMethod (.GetType target) mname)]
-      (event-dg-helper target m handler)
-      (throw (System.MissingMethodException. (str (.GetType target)) mname)))))
-
-(defn += [target event-key handler] (event-helper target event-key handler "add_"))
-
-(defn -= [target event-key handler] (event-helper target event-key handler "remove_"))
-
-(defn command-binding
-  ([command exec-fn can-exec-fn]
-     (CommandBinding. command
-                      (gen-delegate ExecutedRoutedEventHandler [s e] (exec-fn s e))
-                      (when can-exec-fn
-                        (gen-delegate CanExecuteRoutedEventHandler [s e] (can-exec-fn s e)))))
-  ([command exec-fn]
-     (command-binding command exec-fn nil)))
-
-(defn get-static-field [type fname]
-  (when-let [f (.GetField type fname (enum-or BindingFlags/Static BindingFlags/Public))]
-    (.GetValue f nil)))
-
-(defn get-static-field-throw [type fname]
-  (or (get-static-field type fname) (throw (System.MissingFieldException. (str type) fname))))
-
-(defn find-dep-prop [type key]
-  (get-static-field type (str (name key) "Property")))
-
-(defn find-routed-event [type key]
-  (get-static-field type (str (name key) "Event")))
-
-(defn bind [target key binding]
-  (let [dep-prop (if (instance? DependencyProperty key) key (find-dep-prop (type target) key))]
-    (BindingOperations/SetBinding target dep-prop binding)))
+(defn- caml-form? [x] (and (list? x) (resolve-element-type (first x))))
 
 (declare caml-compile)
 
-(defn gen-invoke [method-str sym & args]
-  (let [method-sym (symbol (str "." method-str))]
-    `(~method-sym ~sym ~@args)))
+(defn- get-static-field [type fname]
+  (when-let [f (.GetField type fname (enum-or BindingFlags/Static BindingFlags/Public))]
+    (.GetValue f nil)))
 
-(defn when-type? [t] (comment (eval `(clojure.core/when (clojure.core/instance? System.Type ~t) ~t))))
+(defn- find-dep-prop [type key]
+  (get-static-field type (str (name key) "Property")))
 
-(defn get-xaml-type [^Type type]
-  (.GetXamlType (XamlReader/GetWpfSchemaContext) type))
+(defn- find-routed-event [type key]
+  (get-static-field type (str (name key) "Event")))
 
-(defn get-type-converter [^Type type]
-  (when-let [xaml-type (get-xaml-type type)]
-    (when-let [type-converter (.TypeConverter xaml-type)]
-      (.ConverterType type-converter))))
-
-(defn convert-from [cls-type type-converter value]
+(defn- convert-from [cls-type type-converter value]
   (when value (if type-converter
                 (if (instance? cls-type value)
                   value
@@ -237,123 +182,118 @@
                     (when (instance? TypeConverter tc)
                       (when (.CanConvertFrom tc (type value))
                         (.ConvertFrom tc value)))))
-                (cast cls-type value))))
+                value)))
 
-(defn pset-property-handler [^Type type ^PropertyInfo prop-info target value]
-  (let [ptype (.PropertyType prop-info)
-        type-converter (get-type-converter ptype)]
-    (if (instance? BindingBase value)
-      (bind target (.Name prop-info) value)
-      (if (.CanWrite prop-info)
-        (let [res (if (fn? value)
+(defn- pset-resolve-property-key [type xaml-type ^PropertyInfo prop-info]
+  (let [tc (.TypeConverter xaml-type)
+        ptype (.PropertyType prop-info)
+        type-converter (when tc (.ConverterType tc))]
+    (if (.CanWrite prop-info)
+      (fn pset-set-property [target value]
+        (let [res (if (ifn? value)
                     (value (.GetValue prop-info target nil))
                     value)
               res (convert-from ptype type-converter value)]
-          (.SetValue prop-info target res nil))
-        (if (fn? value)
-          (value (.GetValue prop-info target nil))
-          (let [^ICollection coll (.GetValue prop-info target nil)]
-            (.Clear coll)
-            (doseq [x value] (.Add coll x))))))))
-(defn pset-event-handler [^Type type ^EventInfo event-info target value]
-  (event-dg-helper target (.GetAddMethod event-info) value))
+          (.SetValue prop-info target res nil)))
+      (fn pset-mutate-property [target value]))))
 
-(defn pset-method-handler [^Type type ^MethodInfo method-info target value]
-  (.Invoke method-info target (to-array value)))
+(defn- pset-resolve-event-key [type ^EventInfo event-info]
+  (let [add-method (.GetAddMethod event-info)
+        dg-type (.ParameterType (aget (.GetParameters add-method) 0))]
+    (fn pset-add-event-handler [target handler]
+      (let [dg (if (instance? Delegate handler)
+                 handler
+                 (gen-delegate dg-type
+                               [s e] (binding [*cur* target] (handler s e))))]
+        (.Invoke add-method target (to-array [dg]))))))
 
-(defn pset-handle-member-key [^Type type name target val]
-  (let [members (.GetMember type name)]
-    (if-let [member (first members)]
-      (do
-        (cond
-         (instance? PropertyInfo member) (pset-property-handler type member target val)
-         (instance? EventInfo member) (pset-event-handler type member target val)
-         (instance? MethodInfo member) (pset-method-handler type member target val)
-         :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
-      (throw (MissingMemberException. (str type) name)))))
+(defn lookup-property-or-event [^Type cls member-name]
+  (let [members
+        (.GetMember
+         cls
+         member-name
+         (enum-or MemberTypes/Property  MemberTypes/Event)
+         (enum-or BindingFlags/Public BindingFlags/Instance))
+        n (count members)]
+    (case n
+      0 (throw (ex-info (str "Unable to find property or event named " member-name " for type " cls)
+                        {:type ::lookup-property-or-event-exception
+                         :class cls
+                         :member-name member-name}))
+      1 (first members)
+      (throw (ex-info (str "Ambiguous match for property event named " member-name " for type " cls)
+                        {:type ::lookup-property-or-event-exception
+                         :class cls
+                         :member-name member-name
+                         :found members})))))
 
-(defn pset-attached-prop-setter-handler [^Type type ^MethodInfo method-info target value]
-  (let [ptype (.ParameterType (second (.GetParameters method-info)))
-        type-converter (get-type-converter ptype)]
-    (.Invoke method-info nil (to-array [target (convert-from ptype type-converter value)]))))
+(defn- pset-resolve-member-key [^Type type xaml-type member-name]
+  (if-let [member (lookup-property-or-event type member-name)]
+    (do
+      (cond
+       (instance? PropertyInfo member) (pset-resolve-property-key type xaml-type member )
+       (instance? EventInfo member) (pset-resolve-event-key type member)
+       :default (throw (InvalidOperationException. (str "Don't know how to handle " member " on " type)))))
+    (throw (MissingMemberException. (str type) name))))
 
-(defn pset-handle-attached-property [^Type type attached-type attached-prop target val]
-  (if *xaml-schema-ctxt*
-    (if-let [xaml-type (resolve-xaml-type *xaml-schema-ctxt* attached-type)]
-      (if-let [member (.GetAttachableMember xaml-type attached-prop)]
-        (pset-attached-prop-setter-handler
-         type (.. member Invoker UnderlyingSetter) target val)
-        (throw (Exception. (str "Unable to find attached property " attached-prop " on type " attached-type))))
-      (throw (Exception. (str "Unable to find xaml type " attached-type))))
-    (throw (Exception. "No *xaml-schema-ctxt*"))))
+(defn- pset-resolve-keyword [type xaml-type kw]
+  (let [name-part (name kw)
+        ns-part (namespace kw)]
+    (if ns-part
+      () ;;TODO
+      (pset-resolve-member-key type xaml-type name-part))))
 
-(defn pset-handle-keyword [^Type type key target val]
-  (let [key (name key)
-        dot-parts (str/split key #"\.")]
-    (cond
-     (> (count dot-parts) 1) (pset-handle-attached-property type (first dot-parts) (second dot-parts) target val)
-                                        ;(= "*cur*" key) `(~val ~target)
-     :default (pset-handle-member-key type key target val))))
-
-(defn pset-handle-key [^Type type key target val]
-  (cond
-   (keyword? key) (pset-handle-keyword type key target val)
-                                        ;(instance? AttachedData key) `(ClojureWpf.core/attach ~key ~target ~val)
-                                        ;(instance? DependencyProperty key) (throw (NotImplementedException.))
-   :default (throw (ArgumentException. (str "Don't know how to handle key " key)))))
-
-(defn caml-form? [x] (and (list? x) (keyword? (first x))))
+(defn pset-resolve-key
+  ([type property-event-key]
+     (pset-resolve-key type (get-xaml-type type) property-event-key))
+  ([type xaml-type property-event-key]
+      (if (instance? clojure.lang.Named property-event-key)
+        (pset-resolve-keyword type xaml-type property-event-key)
+        (throw (ArgumentException. (str "Don't know how to handle key " property-event-key))))))
 
 (defn pset-compile-val [val]
   (cond
-   (caml-form? val) (caml-compile val)
-   (vector? val) (vec (for [x val]
-                        (if (caml-form? x) (caml-compile x) x)))
-   :default val))
+   (caml-form? val) (let [compiled (caml-compile val)]
+                      (fn [] (compiled)))
+   (vector? val) (let [compiled-seq
+                       (for [x val]
+                         (if (caml-form? x)
+                           (let [compiled (caml-compile x)]
+                             (fn [] (compiled)))
+                           (fn [] (eval x))))]
+                   (fn [] (vec (for [x compiled-seq] (x)))))
+   :default (fn [] (eval val))))
 
-(defn pset-exec-setter [type-sym target-sym key value]
-  `(let [val# ~(ClojureWpf.core/pset-compile-val value)]
-     (ClojureWpf.core/pset-handle-key ~type-sym ~key ~target-sym val#)))
+(defn pset-compile-late [property-event-setter-pairs]
+  (let [kvp (partition 2 property-event-setter-pairs)
+        kvp-compiled (doall
+                      (for [[k v] kvp]
+                        [k (pset-compile-val v)]))]
+    (fn pset-exec-late [target]
+      (binding [*cur* target]
+        (let [cls (type target)
+              xaml-type (get-xaml-type cls)]
+          (doseq [[k v] kvp-compiled]
+            ((pset-resolve-key cls xaml-type k)
+             target
+             (v))))))))
 
-(defn pset-exec-setters [type-sym target-sym setters]
-  (for [[key val] (partition 2 setters)]
-    (pset-exec-setter type-sym target-sym key val)))
+(defn pset-compile-early
+  ([clr-type property-event-setter-pairs]
+     (pset-compile type (get-xaml-type type property-event-setter-pairs)))
+  ([clr-type xaml-type property-event-setter-pairs]
+     (let [kvp (partition 2 property-event-setter-pairs)
+           kvp-compiled (doall
+                         (for [[k v] kvp]
+                           [(pset-resolve-key clr-type xaml-type k) (pset-compile-val v)]))]
+       (fn pset-exec-early [target]
+         (binding [*cur* target]
+           (doseq [[k v] kvp-compiled]
+             (k target (v))))))))
 
-(defn pset* [target setters]
-  (let [target-type (.GetType target)]
-    (binding [*cur* target]
-      (doseq [[k v] (partition 2 setters)]
-        (pset-handle-key target-type k target v))
-      target)))
+;;; ## Compilation of at forms
 
-(defn pset-compile [target setters]
-  (let [target-sym (gensym "t")
-        type-sym (gensym "type")]
-    `(let [~target-sym ~target
-           ~type-sym (.GetType ~target-sym)]
-       (binding [ClojureWpf.core/*cur* ~target-sym]
-         ~@(pset-exec-setters type-sym target-sym setters)
-         ~target-sym))))
-
-(defmacro pset! [& forms]
-  (let [type-target? (first forms)
-        type (when-type? type-target?)
-        target (if type (second forms) type-target?)
-        setters (if type (nnext forms) (next forms))]
-    (pset-compile target setters)))
-
-(defmacro defattached [name & opts]
-  (let [qname (str *ns* "/" (clojure.core/name name))]
-    `(clojure.core/defonce ~name
-       (ClojureWpf.core/create-attached-data
-        (System.Windows.DependencyProperty/RegisterAttached
-         ~qname System.Object System.Object
-         (ClojureWpf.core/pset! (System.Windows.FrameworkPropertyMetadata.)
-                                :Inherits true ~@opts))))))
-
-(defattached cur-view)
-
-(defn split-attrs-forms [forms]
+(defn- split-attrs-forms [forms]
   (let [was-key (atom false)]
     (split-with (fn [x]
                   (cond
@@ -361,175 +301,172 @@
                    (list? x) false
                    :default (do (reset! was-key true) true))) forms)))
 
+(defn at-compile [async target-path & forms]
+  (let [[target-attrs child-forms] (split-attrs-forms forms)
+        tag (:tag (meta target-path))
+        clr-type (when tag (eval tag))
+        pset-eval-str
+        (str
+         (if clr-type
+           (str "#=(ClojureWpf.core/pset-compile-early " (pr-str clr-type))
+           "#=(ClojureWpf.core/pset-compile-late")
+         " " (pr-str target-attrs) ")")
+        child-at-exprs (map (fn [form] (apply at-compile async form))
+                            child-forms)]
+    `(~(if async 'ClojureWpf.core/async-doat 'ClojureWpf.core/doat)
+      ~target-path
+      (~(eval-reader pset-eval-str) ClojureWpf.core/*cur*)
+      ~@child-at-exprs
+      ClojureWpf.core/*cur*)))
+
+(defmacro at [target-path & forms]
+  (apply at-compile false target-path forms))
+
+(defmacro async-at [target-path & forms]
+  (apply at-compile true target-path forms))
+
 (defn at-compile [target forms]
-  (let [[target-attrs forms] (split-attrs-forms forms)
-        tsym (gensym "t")
-        xforms (for [form forms]
-                 (let [path (first form)
-                       setters (rest form)]
-                   (at-compile `(ClojureWpf.core/find-elem-warn ~tsym ~path) setters)))
-        pset-expr (pset-compile tsym target-attrs)]
-    `(do (let [~tsym ~target] ~pset-expr
+   (let [[target-attrs forms] (split-attrs-forms forms)
+         xforms (for [form forms]
+                  (let [path (first form)
+                        setters (rest form)]
+                    (recur (find-elem-throw ~tsym ~path) setters)))
+         pset-expr (pset-compile tsym target-attrs)]
+    (do (let [~tsym ~target] ~pset-expr
               ~@xforms))))
 
-(defmacro at [target & forms]
-  (let [[dispatcher-obj target] (compile-target-expr target)
-        at-expr (at-compile target forms)]
-    `(ClojureWpf.core/with-invoke ~dispatcher-obj
-       ~at-expr)))
+;;; ## Compilation of caml forms
 
-(defmacro async-at [target & forms]
-  (let [[dispatcher-obj target] (compile-target-expr target)
-        at-expr (at-compile target forms)]
-    `(ClojureWpf.core/with-begin-invoke ~dispatcher-obj
-       ~at-expr)))
-
-(defn xaml-ns
-  [ns-name asm-name]
-  (if-let [asm (assembly-load asm-name)]
-    {:ns (str "clr-namespace:" ns-name ";assembly=" asm-name)
-     :context (XamlSchemaContext. [asm])}
-    (throw (Exception. ("Unable to load assembly " asm-name)))))
-
-(defn caml-children-expr [ns-ctxt ^XamlType xt ^Type type elem-sym children]
+(defn caml-children-expr [^XamlType xt ^Type type children]
   (when (and (sequential? children) (seq children))
-    (let [children* (vec (for [ch children]
-                           (if (caml-form? ch) (caml-compile ns-ctxt ch) ch)))
+    (let [children (vec (for [ch children]
+                           (if (caml-form? ch) (caml-compile ch) ch)))
           cp (.get_ContentProperty xt)
           member (.get_UnderlyingMember cp)
           cp-xt (.Type cp)
-          is-collection (.IsCollection cp-xt)]
+          is-collection (.IsCollection cp-xt)
+          children (if is-collection children (first children))]
       (if (instance? PropertyInfo member)
-        (let [val-sym (gensym "val")
-              expr `(pset-handle-key ~type ~(keyword (.Name member)) ~elem-sym ~val-sym)]
-          (if is-collection
-            `(let [~val-sym (clojure.core/first ~children*)] ~expr)
-            `(let [~val-sym ~children*] ~expr)))
-        (throw (ex-info (str "Unable to find conent property for" xt) {}))))))
+        (let [handler (pset-resolve-property-key type xt member)]
+          (fn caml-set-children [target]
+            (handler target children)))
+        (throw (ex-info (str "Unable to find content property for" xt) {}))))))
+
+;; (defrecord CamlForm [clr-type ctr element-name pset-expr]
+;;   clojure.lang.IFn
+;;   (invoke [this]
+;;     (let [elem (.Invoke ctr nil)]
+;;       (when element-name
+;;         (set! (.Name elem) element-name))
+;;       ;; (when pset-fn
+;;       ;;   (pset-fn elem))
+;;       ;; (when children-fn
+;;       ;;   (children-fn elem))
+;;       elem))) 
+
+;; (defn get-no-arg-ctr [^Type clr-type]
+;;   (.GetConstructor clr-type Type/EmptyTypes))
+
+;; (defn read-caml-form [clr-type element-name pset-expr]
+;;   (let [ctr (get-no-arg-ctr clr-type)]
+;;     (when ctr
+;;       (CamlForm. clr-type ctr element-name pset-expr))))
+
+;; (defmethod print-dup CamlForm [o w]
+;;   (.Write w "(ClojureWpf.core/read-caml-form ")
+;;   (.Write w (str/join
+;;              " "
+;;              (map
+;;               pr-str
+;;               (map
+;;                (partial get o)
+;;                [:clr-type :element-name :pset-expr]))))
+;;   (.Write w ")"))
 
 (defn caml-compile
   ([form] (caml-compile nil form))
   ([ns-ctxt form]
-     (let [ns-ctxt (or ns-ctxt default-xaml-context)]
+     (let [ns-ctxt (or ns-ctxt *xaml-schema-ctxt* default-xaml-context)]
        (binding [*xaml-schema-ctxt* ns-ctxt]
-         (let [nexpr (name (first form))
-               enparts (str/split nexpr #"#")
-               nexpr (first enparts)
-               ename (when (> (count enparts) 1) (second enparts))
-               xt (resolve-xaml-type ns-ctxt nexpr)]
+         (let [element-type-name (first form)
+               name-part (name element-type-name)
+               ns-part (namespace element-type-name)
+               enparts (str/split name-part #"#")
+               type-name-part (first enparts)
+               element-name-part (when (> (count enparts) 1) (second enparts))
+               element-type-name (symbol ns-part type-name-part)
+               xt (resolve-element-type ns-ctxt element-type-name)]
            (if xt
-             (let [type (.get_UnderlyingType xt)
-                   elem-sym (with-meta (gensym "e") {:tag type})
-                   ctr-sym (symbol (str (.FullName type) "."))
-                   forms (if ename [`(.set_Name ~elem-sym ~ename)] [])
+             (let [clr-type (.get_UnderlyingType xt)
+                   ctr (.GetConstructor clr-type Type/EmptyTypes)
                    more (rest form)
                    attrs? (first more)
-                   pset-expr (when (vector? attrs?)
-                               (pset-compile elem-sym attrs?))
-                   forms (if pset-expr (conj forms pset-expr) forms)
-                   children (if pset-expr (rest more) more)
-                   children-expr (caml-children-expr ns-ctxt xt type elem-sym children)
-                   forms (if children-expr (conj forms children-expr) forms)
-                   ]
-               `(let [~elem-sym (~ctr-sym)]
-                  ~@forms
-                  ~elem-sym))
-             (throw (ex-info (str "Unable to resolve Xaml type " nexpr) {}))))))))
+                   pset-fn (when (vector? attrs?)
+                             (pset-compile-early clr-type xt attrs?))
+                   children (if pset-fn (rest more) more)
+                   children-fn (caml-children-expr xt type children)]
+               (fn caml-exec []
+                 (let [elem (.Invoke ctr nil)]
+                   (when element-name-part
+                     (set! (.Name elem) element-name-part))
+                   (when pset-fn
+                     (pset-fn elem))
+                   (when children-fn
+                     (children-fn elem))
+                   elem)))
+             (throw (ex-info (str "Unable to resolve Xaml type " element-type-name) {}))))))))
 
-(declare caml*)
-
-(defn caml-children* [ns-ctxt ^XamlType xt ^Type type parent children]
-  (when (and (sequential? children) (seq children))
-    (let [children* (vec (for [ch children]
-                           (if (caml-form? ch) (caml* ns-ctxt ch) ch)))
-          cp (.get_ContentProperty xt)
-          member (.get_UnderlyingMember cp)
-          cp-xt (.Type cp)
-          is-collection (.IsCollection cp-xt)]
-      (if (instance? PropertyInfo member)
-        (pset-property-handler type member parent
-                               (if is-collection children* (first children*)))
-        (throw (ex-info (str "Unable to find conent property for" xt) {}))))))
-
-(defn caml*
-  ([ns-ctxt & form]
-     (let [ns-ctxt (or ns-ctxt default-xaml-context)]
-       (binding [*xaml-schema-ctxt* ns-ctxt]
-         (let [nexpr (name (first form))
-               enparts (str/split nexpr #"#")
-               nexpr (first enparts)
-               ename (when (> (count enparts) 1) (second enparts))
-               xt (resolve-xaml-type ns-ctxt nexpr)]
-           (if xt
-             (let [type (.get_UnderlyingType xt)
-                   inst (Activator/CreateInstance type)
-                   more (rest form)
-                   attrs? (first more)
-                   attrs (when (vector? attrs?) attrs?)
-                   children (if attrs (rest more) more)]
-               (when ename (set! (.Name inst) ename))
-               (pset* inst attrs)
-               (caml-children* ns-ctxt xt type inst children)
-               inst)
-             (throw (ex-info (str "Unable to resolve Xaml type " nexpr) {}))))))))
-
-
-(defn caml-children* [parent xaml-type children])
-
-(defn caml-compile2 [target & more]
-  (let [attrs? (first more)
-        attrs (vec (when (vector? attrs?) attrs?))
-        children (if attrs (rest more) more)
-        children (for [ch children]
-                   (if (caml-form? ch)
-                     (caml-compile2 ch)
-                     ch))]
-    `(pset! (caml* ~target) ~@attrs)))
-
-(defmacro caml [& form]
-  (let [x (first form)
-        ns-map (when (map? x) (eval x))
+(defmacro caml
+  [& forms]
+  (let [ns-map? (first forms)
+        ns-map (when (map? ns-map?) (eval ns-map?))
         ns-ctxt (merge *xaml-schema-ctxt* ns-map)
-        form (if ns-map (rest form) form)]
-    (caml-compile ns-ctxt form)))
+        forms (if ns-map (rest forms) forms)
+        eval-str (binding [*print-dup* true]
+                   (str
+                    "#=(ClojureWpf.core/caml-compile "
+                    (pr-str ns-map)
+                    " "
+                    (pr-str forms)
+                    ")"))]
+    `((fn [] (~(eval-reader eval-str))))))
 
-(defattached dev-sandbox-refresh)
+;; (defn pr-caml-form [o]
+;;   (binding [*print-dup* true]
+;;     (str "#=(ClojureWpf.core/read-caml-form "
+;;          (str/join
+;;           " "
+;;           (map
+;;            pr-str
+;;            (map
+;;             (partial get o)
+;;             [:clr-type :element-name :pset-expr])))
+;;          ")")))
 
-(defn set-sandbox-refresh [sandbox func]
-  (let [window (:window sandbox)]
-    (doat window
-          (attach dev-sandbox-refresh window (fn [] (at window :Content (func))))
-          (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
+;;;; Data Binding
 
-(defn sandbox-refresh [s e]
-  (binding [*cur* s]
-    (when-let [on-refresh @dev-sandbox-refresh]
-      (binding [*dev-mode* true] (on-refresh)))))
+(defmethod print-method ObservableMap [coll w]
+  (.Write w "{")
+  (.Write w (str/join ", "
+                      (for [[k v] coll]
+                        (str (pr-str (keyword k)) " " (pr-str v)))))
+  (.Write w "}"))
 
-(defn dev-sandbox [& options]
-  (let [sandbox (apply separate-threaded-window options)
-        window (:window sandbox)
-        opts (apply hash-map options)
-        {:keys [refresh title]} opts]
-    (at window
-        :CommandBindings (fn [bindings]
-                           (.Add bindings
-                                 (command-binding
-                                  System.Windows.Input.NavigationCommands/Refresh
-                                  #'sandbox-refresh))))
-    (when title (at window :Title title))
-    (when refresh (set-sandbox-refresh sandbox refresh))
-    sandbox))
+(defmethod print-method ObservableVector [coll w]
+  (.Write w "[")
+  (.Write w (str/join " " (map pr-str coll)))
+  (.Write w "]"))
 
-(defn dev-init [refresh]
-  (def sand (dev-sandbox))
-  (def wind (:window sand))
-  (at wind :Height 768.0 :Width 1024.0)
-  (set-sandbox-refresh sand refresh))
+(defmulti observable class)
 
-(defn get-app-main-window []
-  (when-let [app Application/Current]
-    (doat app (.MainWindow *cur*))))
+(defmethod observable clojure.lang.IPersistentCollection
+  [coll]
+  (let [res (ObservableVector.)]
+       (doseq [x coll] (conj! res x))
+       res))
 
-(defn resource-uri [assembly-name path]
-  (str "pack://application:,,,/" assembly-name ";component" path))
+(defmethod observable clojure.lang.IPersistentMap
+  [coll]
+  (let [res (ObservableMap.)]
+    (doseq [[k v] coll] (assoc! res k v))
+    res))

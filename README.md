@@ -16,8 +16,7 @@ nil
 ; Creates a button with the text "Hello World"
 user=> (def myButton (caml :Button [:Content "Hello World"]))
 #'user/myButton
-user=> (defn click-fn [sender event-args] (println "You clicked
-me."))
+user=> (defn click-fn [sender event-args] (println "You clicked me."))
 #'user/click-fn
 ; Binds the Click event of myButton to the click-fn handler
 user=> (at myButton :Click #'click-fn)
@@ -240,7 +239,7 @@ to edit it) and then later compile it into a C# assembly.
 
 ### FAQ
 
-_Why does the ClojureWpf namespace use CamelCase?  Isn't that against Clojure naming conventions?_
+_Why does the ClojureWpf namespace use CamelCase?  Isn't that very un-clojure-like?_
 
 Yes, it is. But, originally the only way we had of packaging the library into a
 DLL was to store as an embedded resource in a C# DLL. Also, we did and (still
