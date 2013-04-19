@@ -1,4 +1,4 @@
-(ns ClojureWpf.core
+(ns clj-wpf.core
   (:import
    [System.Windows.Markup XamlReader]
    [System.Threading Thread ApartmentState ParameterizedThreadStart ThreadStart
@@ -33,11 +33,11 @@
                (sys-func [Object] [] (func))))))
 
 (defmacro with-invoke [dispatcher-obj & body]
-  `(ClojureWpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
+  `(clj-wpf.core/with-invoke* ~dispatcher-obj (fn [] ~@body)))
 
 (defmacro with-invoke? [dispatcher-obj? & body]
   `(if (clojure.core/instance? DispatcherObject ~dispatcher-obj?)
-     (ClojureWpf.core/with-invoke ~dispatcher-obj? ~@body)
+     (clj-wpf.core/with-invoke ~dispatcher-obj? ~@body)
      (do ~@body)))
 
 (defn with-begin-invoke* [^DispatcherObject dispatcher-obj func]
@@ -48,11 +48,11 @@
                     (sys-func [Object] [] (func))))))
 
 (defmacro with-begin-invoke [dispatcher-obj & body]
-  `(ClojureWpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
+  `(clj-wpf.core/with-begin-invoke* ~dispatcher-obj (fn [] ~@body)))
 
 (defmacro with-begin-invoke? [dispatcher-obj? & body]
   `(if (clojure.core/instance? DispatcherObject ~dispatcher-obj?)
-     (ClojureWpf.core/with-begin-invoke ~dispatcher-obj? ~@body)
+     (clj-wpf.core/with-begin-invoke ~dispatcher-obj? ~@body)
      (do ~@body)))
 
 
@@ -117,7 +117,7 @@
     (let [target? (first target-path-expr)
           target (if (keyword? target?) nil target?)
           path-expr (vec (if target (rest target-path-expr) target-path-expr))
-          path-res-expr `(ClojureWpf.core/find-elem-throw ~target ~path-expr)]
+          path-res-expr `(clj-wpf.core/find-elem-throw ~target ~path-expr)]
       [target path-res-expr])
     [target-path-expr target-path-expr]))
 
@@ -125,36 +125,32 @@
 
 (defmacro doat [target-path & body]
   (let [[dispatcher-obj target] (compile-target-path-expr target-path)]
-    `(ClojureWpf.core/with-invoke? ~dispatcher-obj
-       (clojure.core/binding [ClojureWpf.core/*cur* ~target]
+    `(clj-wpf.core/with-invoke? ~dispatcher-obj
+       (clojure.core/binding [clj-wpf.core/*cur* ~target]
                              ~@body))))
 
 (defmacro async-doat [target-path & body]
   (let [[dispatcher-obj target] (compile-target-path-expr target-path)]
-    `(ClojureWpf.core/with-begin-invoke? ~dispatcher-obj
-       (clojure.core/binding [ClojureWpf.core/*cur* ~target]
+    `(clj-wpf.core/with-begin-invoke? ~dispatcher-obj
+       (clojure.core/binding [clj-wpf.core/*cur* ~target]
                              ~@body))))
 
 ;;; ## Compilation of ```property-event-setter-pairs```
 
-;; This code is an obvious hack, but in the end was deemed the best solution to
-;; a difficult problem: that of returing a function Clojure as the result of a
-;; macro.  Basically there were three choices: 1) write a separate early binding
-;; and late binding version of the code (this was tried and was too problematic
-;; to maintain and caused bugs), 2) just have a late binding version (this loses
-;; many advantages of the early binding version in terms of performance and
-;; static XAML type checking), 3) find a work-around such as this.  For now, we
-;; are sticking with option 3 because, although it is somewhat of a hack, it
-;; provides the best set of features to the user with the least amount of
-;; headache in terms of maintainability.
+(defn- caml-resolve-element [element-type-name]
+  (let [name-part (name element-type-name)
+        ns-part (namespace element-type-name)
+        enparts (str/split name-part #"#")
+        type-name-part (first enparts)
+        element-name-part (when (> (count enparts) 1) (second enparts))
+        element-type-name (symbol ns-part type-name-part)
+        xt (resolve-element-type element-type-name)]
+    (when xt
+      {:type-name element-type-name
+       :element-name element-name-part
+       :xaml-type xt})))
 
-(defmethod print-dup EvalReaderWrapper [o w]
-  (.Write w (.Content o)))
-
-(defn- eval-reader [str]
-  (doto (EvalReaderWrapper.) (.set_Content str)))
-
-(defn- caml-form? [x] (and (list? x) (resolve-element-type (first x))))
+(defn- caml-form? [x] (and (list? x) (caml-resolve-element (first x))))
 
 (declare caml-compile)
 
@@ -182,14 +178,36 @@
   (let [tc (.TypeConverter xaml-type)
         ptype (.PropertyType prop-info)
         type-converter (when tc (.ConverterType tc))]
-    (if (.CanWrite prop-info)
-      (fn pset-set-property [target value]
-        (let [res (if (ifn? value)
-                    (value (.GetValue prop-info target nil))
-                    value)
-              res (convert-from ptype type-converter value)]
-          (.SetValue prop-info target res nil)))
-      (fn pset-mutate-property [target value]))))
+    (cond
+     (.CanWrite prop-info)
+     (fn pset-set-property [target value]
+       (let [res (if (fn? value)
+                   (value (.GetValue prop-info target nil))
+                   value)
+             res (convert-from ptype type-converter value)]
+         (.SetValue prop-info target res nil)))
+
+     (.IsAssignableFrom ICollection ptype)
+     (fn pset-mutate-property [target value]
+       (let [cur-value (.GetValue prop-info target nil)]
+         (cond
+          (fn? value)
+          (value cur-value)
+
+          (sequential? value)
+          (do
+            (.Clear cur-value)
+            (doseq [x value]
+              (.Add cur-value x)))
+
+          :else
+          (throw (ex-info "Don't know how to handle property mutator"
+                          {:property prop-info
+                           :value value})))))
+
+     :else
+     (throw (ex-info "Don't know how to handle read-only property that doesn't implement ICollection"
+                     {:property prop-info})))))
 
 (defn- pset-resolve-event-key [type ^EventInfo event-info]
   (let [add-method (.GetAddMethod event-info)
@@ -262,16 +280,16 @@
         tsym (gensym "target")
         csym (gensym "cls")]
     `(fn pset-exec-late [~tsym]
-       (binding [ClojureWpf.core/*cur* ~tsym]
+       (binding [clj-wpf.core/*cur* ~tsym]
          (let [~csym (clojure.core/type ~tsym)]
            ~@(for [[k v] kvp-compiled]
-               `((ClojureWpf.core/pset-resolve-key ~csym ~(keyword k))
+               `((clj-wpf.core/pset-resolve-key ~csym ~(keyword k))
                  ~tsym
                  ~v)))))))
 
 (defn pset-compile-early
   ([clr-type property-event-setter-pairs]
-     (pset-compile type (get-xaml-type type property-event-setter-pairs)))
+     (pset-compile-early type (get-xaml-type type property-event-setter-pairs)))
   ([clr-type xaml-type property-event-setter-pairs]
      (doseq [[k v] (partition 2 property-event-setter-pairs)]
        (lookup-property-or-event clr-type (name k)))
@@ -306,14 +324,14 @@
         clr-type (when tag (eval tag))
         child-at-exprs (map (fn [form] (apply at-compile async form))
                             child-forms)]
-    `(~(if async 'ClojureWpf.core/async-doat 'ClojureWpf.core/doat)
+    `(~(if async 'clj-wpf.core/async-doat 'clj-wpf.core/doat)
       ~target-path
       (~(if clr-type
           (pset-compile-early clr-type target-attrs)
           (pset-compile-late target-attrs))
-       ClojureWpf.core/*cur*)
+       clj-wpf.core/*cur*)
       ~@child-at-exprs
-      ClojureWpf.core/*cur*)))
+      clj-wpf.core/*cur*)))
 
 (defmacro at [target-path & forms]
   (apply at-compile false target-path forms))
@@ -333,7 +351,7 @@
           is-collection (.IsCollection cp-xt)
           children (if is-collection children (first children))]
       (if (instance? PropertyInfo member)
-        `((ClojureWpf.core/pset-resolve-key ~clr-type ~(keyword (.Name member)))
+        `((clj-wpf.core/pset-resolve-key ~clr-type ~(keyword (.Name member)))
           ~target-sym
           ~children)
         (throw (ex-info (str "Unable to find content property for" xt) {}))))))
@@ -344,28 +362,23 @@
      (let [ns-ctxt (or ns-ctxt *xaml-schema-ctxt* default-xaml-context)]
        (binding [*xaml-schema-ctxt* ns-ctxt]
          (let [element-type-name (first form)
-               name-part (name element-type-name)
-               ns-part (namespace element-type-name)
-               enparts (str/split name-part #"#")
-               type-name-part (first enparts)
-               element-name-part (when (> (count enparts) 1) (second enparts))
-               element-type-name (symbol ns-part type-name-part)
-               xt (resolve-element-type ns-ctxt element-type-name)]
-           (if xt
-             (let [clr-type (.get_UnderlyingType xt)
+               {:keys [element-name xaml-type]}
+               (caml-resolve-element element-type-name)]
+           (if xaml-type
+             (let [clr-type (.get_UnderlyingType xaml-type)
                    elem-sym (with-meta (gensym "e") {:tag type})
                    ctr (.GetConstructor clr-type Type/EmptyTypes)
                    ctr-sym (symbol (str (.FullName clr-type) "."))
-                   forms (if element-name-part
-                           [`(.set_Name ~elem-sym ~element-name-part)] [])
+                   forms (if element-name
+                           [`(.set_Name ~elem-sym ~element-name)] [])
                    more (rest form)
                    attrs? (first more)
                    pset-expr (when (vector? attrs?)
-                               `(~(pset-compile-early clr-type xt attrs?)
+                               `(~(pset-compile-early clr-type xaml-type attrs?)
                                  ~elem-sym))
                    forms (if pset-expr (conj forms pset-expr) forms)
                    children (if pset-expr (rest more) more)
-                   children-expr (when (seq children) (caml-children-expr xt clr-type elem-sym children))
+                   children-expr (when (seq children) (caml-children-expr xaml-type clr-type elem-sym children))
                    forms (if children-expr (conj forms children-expr) forms)]
                (when-not ctr
                  (throw (ex-info (str "Unable to find default constructor for type " clr-type)
@@ -374,22 +387,6 @@
                `(let [~elem-sym (~ctr-sym)]
                   ~@forms
                   ~elem-sym))
-             ;; (let [clr-type (.get_UnderlyingType xt)
-             ;;       ctr (.GetConstructor clr-type Type/EmptyTypes)
-             ;;       more (rest form)
-             ;;       attrs? (first more)
-             ;;       pset-expr (when (vector? attrs?)
-             ;;                   (pset-compile-early clr-type xt attrs?))
-             ;;       children (if pset-expr (rest more) more)
-             ;;       children-fn (caml-children-expr xt type children)]
-             ;;   `(let [elem# (.Invoke ~ctr nil)]
-             ;;      ;; (when element-name-part
-             ;;      ;;   (set! (.Name elem) element-name-part))
-             ;;      ;; (when pset-fn
-             ;;      ;;   (pset-fn elem))
-             ;;      ;; (when children-fn
-             ;;      ;;   (children-fn elem))
-             ;;      elem#))
              (throw (ex-info (str "Unable to resolve Xaml type " element-type-name) {}))))))))
 
 (defmacro caml
@@ -397,15 +394,7 @@
   (let [ns-map? (first forms)
         ns-map (when (map? ns-map?) (eval ns-map?))
         ns-ctxt (merge *xaml-schema-ctxt* ns-map)
-        forms (if ns-map (rest forms) forms)
-        ;; eval-str (binding [*print-dup* true]
-        ;;            (str
-        ;;             "#=(ClojureWpf.core/caml-compile "
-        ;;             (pr-str ns-map)
-        ;;             " "
-        ;;             (pr-str forms)
-        ;;             ")"))
-        ]
+        forms (if ns-map (rest forms) forms)]
     (caml-compile ns-map forms)))
 
 ;;;; Data Binding (observables)
@@ -456,9 +445,13 @@
 (defmacro defattached [name & opts]
   (let [qname (str *ns* "/" (clojure.core/name name))]
     `(clojure.core/defonce ~name
-       (ClojureWpf.core/->AttachedData
+       (clj-wpf.core/->AttachedData
         (System.Windows.DependencyProperty/RegisterAttached
          ~qname System.Object System.Object
-         (ClojureWpf.core/caml System.Windows.FrameworkPropertyMetadata
+         (clj-wpf.core/caml System.Windows.FrameworkPropertyMetadata
                                [:Inherits true ~@opts]))))))
+
+;; TODO
+;; (defmacro get-at [target-path property-key])
+;; Handle attached property keys
 
