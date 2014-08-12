@@ -562,13 +562,18 @@
 
 (defattached dev-sandbox-refresh)
 
+(defn sandbox-refresh [sandbox]
+  (let [window (:window sandbox)]
+    (doat window
+          (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
+
 (defn set-sandbox-refresh [sandbox func]
   (let [window (:window sandbox)]
     (doat window
           (attach dev-sandbox-refresh window (fn [] (at window :Content (func))))
-          (.Execute System.Windows.Input.NavigationCommands/Refresh nil window))))
+          (sandbox-refresh sandbox))))
 
-(defn sandbox-refresh [s e]
+(defn- on-sandbox-refresh [s e]
   (binding [*cur* s]
     (when-let [on-refresh @dev-sandbox-refresh]
       (binding [*dev-mode* true] (on-refresh)))))
@@ -577,15 +582,18 @@
   (let [sandbox (apply separate-threaded-window options)
         window (:window sandbox)
         opts (apply hash-map options)
-        {:keys [refresh title]} opts]
+        {:keys [refresh title auto-refresh]} opts]
     (at window
         :CommandBindings (fn [bindings]
                            (.Add bindings
                                  (command-binding
                                   System.Windows.Input.NavigationCommands/Refresh
-                                  #'sandbox-refresh))))
+                                  #'on-sandbox-refresh))))
     (when title (at window :Title title))
     (when refresh (set-sandbox-refresh sandbox refresh))
+    (when (and refresh auto-refresh (instance? clojure.lang.IRef refresh))
+      (add-watch refresh :auto-refresh
+                 (fn [k r o n] (sandbox-refresh sandbox))))
     sandbox))
 
 (defn dev-init [refresh]
